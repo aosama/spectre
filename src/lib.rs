@@ -2,6 +2,7 @@
 pub mod fft;
 pub mod gate;
 pub mod head;
+pub mod layer;
 pub mod nn;
 pub mod opcount;
 pub mod rfft;
