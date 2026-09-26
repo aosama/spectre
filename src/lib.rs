@@ -6,4 +6,5 @@ pub mod opcount;
 pub mod rfft;
 pub mod tensor;
 pub mod testutil;
+pub mod wavelet;
 pub use num_complex::Complex64 as C64;
