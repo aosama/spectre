@@ -1,0 +1,22 @@
+[package]
+name = "spectre"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+# Enables global operation counters used by tests/opcount.rs to validate
+# asymptotic complexity deterministically. Off by default (zero cost).
+opcount = []
+
+[dependencies]
+num-complex = "0.4"
+rand = "0.8.5"
+rand_chacha = "0.3.1"
+rayon = "1.10"
+
+[profile.test]
+opt-level = 2
+
+[[bin]]
+name = "claims_report"
+required-features = ["opcount"]
