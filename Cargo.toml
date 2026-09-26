@@ -17,3 +17,6 @@ rayon = "1.10"
 [profile.test]
 opt-level = 2
 
+[[bin]]
+name = "claims_report"
+required-features = ["opcount"]
