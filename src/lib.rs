@@ -1,5 +1,6 @@
 //! SPECTRE (arXiv:2502.18394) proof-of-concept.
 pub mod attention;
+pub mod cache;
 pub mod fft;
 pub mod gate;
 pub mod head;
