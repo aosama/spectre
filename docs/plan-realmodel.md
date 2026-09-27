@@ -192,7 +192,7 @@ docs/deviations.md              only if something deviated
 
 - [ ] `data.py`: WikiText-2 → tokenizer → 1024-token blocks (concatenate, drop remainder), train/valid/test.
 - [ ] `evaluate.py`: standard batched perplexity (shifted logits, `exp(mean NLL)`), mps, batch 16.
-- [ ] Run on the **original** GPT-2 small, WikiText-2 test. Expected: PPL in [6.0, 7.5] (literature ~6.5). Print `BASELINE ppl: <x>`.
+- [ ] Run on the **original** GPT-2 small, WikiText-2 test. Expected: PPL in [28, 33] (token-level; GPT-2 small's published token-level WikiText perplexity is ~29-30 — the ~6.5 figure in the literature is *word-level*). Print `BASELINE ppl: <x>`.
 - [ ] Commit `"R4: baseline WikiText-2 perplexity"`.
 
 ### R5 — Fine-tune (SPECTRE params only)
@@ -230,7 +230,7 @@ docs/deviations.md              only if something deviated
 
 - [ ] R0–R6 committed in order (R7 optional); `git log --oneline` shows them.
 - [ ] Cross-validation: both XVAL lines PASS (layer ≤1e-4 rel, rfft ≤1e-5 rel).
-- [ ] Baseline PPL measured and in [6.0, 7.5].
+- [ ] Baseline PPL measured and in [28, 33] (token-level; see R4).
 - [ ] SPECTRE PPL measured; ratio vs baseline reported; PASS if ≤ 1.10 (otherwise an honest FAIL with numbers — that is a valid, reportable outcome).
 - [ ] Frozen params verified unchanged after an optimizer step; trainable count exactly 31,482,144.
 - [ ] `docs/realmodel-report.md` exists with all sections and the Overall line.
