@@ -12,6 +12,8 @@ from transformers import GPT2LMHeadModel
 
 from .data import blocks, loaders
 from .evaluate import perplexity
+from .official import swap_gpt2_attention_official
+from .official_causal import swap_gpt2_attention_official_causal
 from .surgery import swap_gpt2_attention
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -21,6 +23,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 _CKPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints")
 CKPT_FROZEN = os.path.join(_CKPT_DIR, "best.pt")
 CKPT_COTRAIN = os.path.join(_CKPT_DIR, "best-cotraining.pt")
+CKPT_OFFICIAL = os.path.join(_CKPT_DIR, "best-official.pt")
+CKPT_OFFICIAL_CAUSAL = os.path.join(_CKPT_DIR, "best-official-causal.pt")
 REPORT_PATH = os.path.join(REPO_ROOT, "docs", "realmodel-report.md")
 
 
@@ -89,15 +93,24 @@ def _gate_pairwise_distance(model, inputs: torch.Tensor) -> float:
 
 
 def _eval_checkpoint(path: str, diag_inputs: torch.Tensor) -> tuple[float, dict, dict]:
-    """Load a checkpoint, measure test PPL and gate diagnostics."""
-    model = GPT2LMHeadModel.from_pretrained("gpt2")
-    swap_gpt2_attention(model)
+    """Load a checkpoint, measure test PPL and (v1 arch only) gate diagnostics."""
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    arch = ckpt.get("arch", "v1")
+    model = GPT2LMHeadModel.from_pretrained("gpt2")
+    if arch == "official":
+        swap_gpt2_attention_official(model)
+    elif arch == "official-causal":
+        swap_gpt2_attention_official_causal(model)
+    else:
+        swap_gpt2_attention(model)
     model.load_state_dict(ckpt["model"])
     model.to(DEVICE).eval()
     ppl = perplexity(model, loaders(8, "test"), DEVICE)
-    stats = _gate_magnitude_stats(model, diag_inputs)
-    stats["pairwise_cos_dist"] = _gate_pairwise_distance(model, diag_inputs)
+    if arch in ("official", "official-causal"):
+        stats: dict = {}  # v1 gate diagnostics don't apply to the grouped official gate
+    else:
+        stats = _gate_magnitude_stats(model, diag_inputs)
+        stats["pairwise_cos_dist"] = _gate_pairwise_distance(model, diag_inputs)
     del model
     return ppl, ckpt, stats
 
@@ -114,6 +127,16 @@ def main() -> None:
         cotrain_ppl, cotrain_ckpt, cotrain_stats = _eval_checkpoint(CKPT_COTRAIN, diag_inputs)
     cotrain_ratio = cotrain_ppl / BASELINE_PPL if cotrain_ppl else None
 
+    official_ppl, official_ckpt, official_stats = None, {}, {}
+    if os.path.exists(CKPT_OFFICIAL):
+        official_ppl, official_ckpt, official_stats = _eval_checkpoint(CKPT_OFFICIAL, diag_inputs)
+    official_ratio = official_ppl / BASELINE_PPL if official_ppl else None
+
+    official_causal_ppl, official_causal_ckpt, official_causal_stats = None, {}, {}
+    if os.path.exists(CKPT_OFFICIAL_CAUSAL):
+        official_causal_ppl, official_causal_ckpt, official_causal_stats = _eval_checkpoint(CKPT_OFFICIAL_CAUSAL, diag_inputs)
+    official_causal_ratio = official_causal_ppl / BASELINE_PPL if official_causal_ppl else None
+
     init_model = _load_at_init()
     init_stats = _gate_magnitude_stats(init_model, diag_inputs)
     init_stats["pairwise_cos_dist"] = _gate_pairwise_distance(init_model, diag_inputs)
@@ -129,6 +152,14 @@ def main() -> None:
     ]
     if cotrain_ppl:
         ppl_rows.append("| SPECTRE, co-trained backbone (R5b) | {:.4f} | {:.3f} |".format(cotrain_ppl, cotrain_ratio))
+    if official_ppl:
+        ppl_rows.append(
+            "| SPECTRE, official author math (R8) | {:.4f} | {:.3f} |".format(official_ppl, official_ratio)
+        )
+    if official_causal_ppl:
+        ppl_rows.append(
+            "| SPECTRE, official gate + causal mixing (R9) | {:.4f} | {:.3f} |".format(official_causal_ppl, official_causal_ratio)
+        )
 
     gate_rows = [
         "| metric | at init (all-pass) | frozen (R5) | co-trained (R5b) |",
@@ -160,6 +191,38 @@ def main() -> None:
             "| trainable | 127,647,408 (all params) |\n"
             "| wall | 84.6 min, 10/10 epochs, no early stop |\n".format(
                 cotrain_ckpt.get("val_loss", float("nan")), cotrain_ckpt.get("epoch", "?")
+            )
+        )
+
+    official_summary = ""
+    if official_ckpt:
+        official_summary = (
+            "\n## Official-math summary (R8, vendored author implementation)\n"
+            "\n"
+            "| item | value |\n"
+            "| --- | --- |\n"
+            "| best val loss | {:.4f} |\n"
+            "| best epoch | {} |\n"
+            "| arch | vendored SpectreMultiHead: grouped gate G=4, DCT pooling, "
+            "cubic-interp anchors, smooth modReLU, circular mixing n_fft=1024, "
+            "wavelet off; block-diagonal warm start |\n".format(
+                official_ckpt.get("val_loss", float("nan")), official_ckpt.get("epoch", "?")
+            )
+        )
+
+    official_causal_summary = ""
+    if official_causal_ckpt:
+        official_causal_summary = (
+            "\n## Causal-official summary (R9, honest hybrid)\n"
+            "\n"
+            "| item | value |\n"
+            "| --- | --- |\n"
+            "| best val loss | {:.4f} |\n"
+            "| best epoch | {} |\n"
+            "| arch | vendored author gate (grouped G=4 anchors, cubic interp, DCT pooling, "
+            "smooth modReLU) + strictly causal zero-padded linear convolution (FFT length 2N); "
+            "near-identity gate warm start; wavelet off |\n".format(
+                official_causal_ckpt.get("val_loss", float("nan")), official_causal_ckpt.get("epoch", "?")
             )
         )
 
@@ -198,6 +261,8 @@ def main() -> None:
         "| schedule | AdamW 3e-4, warmup 100, cosine to 2e-5, wd 0.05, clip 1.0 |",
         "| effective batch | 32 (micro 8 x grad-accum 4) |",
         cotrain_summary,
+        official_summary,
+        official_causal_summary,
         "## Gate adaptivity diagnostics (10 diverse inputs)",
         "",
         *gate_rows,
@@ -214,6 +279,10 @@ def main() -> None:
     print(f"SPECTRE (frozen backbone) ppl: {frozen_ppl:.4f} (baseline {BASELINE_PPL:.4f}, ratio {frozen_ratio:.3f})")
     if cotrain_ppl:
         print(f"SPECTRE (co-trained) ppl: {cotrain_ppl:.4f} (ratio {cotrain_ratio:.3f})")
+    if official_ppl:
+        print(f"SPECTRE (official author math, R8) ppl: {official_ppl:.4f} (ratio {official_ratio:.3f})")
+    if official_causal_ppl:
+        print(f"SPECTRE (official gate + causal mixing, R9) ppl: {official_causal_ppl:.4f} (ratio {official_causal_ratio:.3f})")
     print(f"report written to {REPORT_PATH}")
     print(f"**Overall: {verdict}**")
 

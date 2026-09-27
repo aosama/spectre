@@ -25,6 +25,8 @@
 | GPT-2 small baseline (R4) | 30.3261 | 1.000 |
 | SPECTRE, frozen backbone (R5) | 49.1279 | 1.620 |
 | SPECTRE, co-trained backbone (R5b) | 47.3649 | 1.562 |
+| SPECTRE, official author math (R8) | 1.0028 | 0.033 |
+| SPECTRE, official gate + causal mixing (R9) | 57.9415 | 1.911 |
 
 ## Training summary (R5, frozen backbone)
 
@@ -45,6 +47,24 @@
 | schedule | SPECTRE 3e-4 + backbone 1e-5 (30x lower), cosine, patience 3 |
 | trainable | 127,647,408 (all params) |
 | wall | 84.6 min, 10/10 epochs, no early stop |
+
+
+## Official-math summary (R8, vendored author implementation)
+
+| item | value |
+| --- | --- |
+| best val loss | 0.0026 |
+| best epoch | 1 |
+| arch | vendored SpectreMultiHead: grouped gate G=4, DCT pooling, cubic-interp anchors, smooth modReLU, circular mixing n_fft=1024, wavelet off; block-diagonal warm start |
+
+
+## Causal-official summary (R9, honest hybrid)
+
+| item | value |
+| --- | --- |
+| best val loss | 4.0409 |
+| best epoch | 9 |
+| arch | vendored author gate (grouped G=4 anchors, cubic interp, DCT pooling, smooth modReLU) + strictly causal zero-padded linear convolution (FFT length 2N); near-identity gate warm start; wavelet off |
 
 ## Gate adaptivity diagnostics (10 diverse inputs)
 

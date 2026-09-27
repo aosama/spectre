@@ -34,6 +34,8 @@ This repository reproduces the SPECTRE attention computations (arXiv:2502.18394,
 - huggingface_hub 1.x needs namespace/name (`Salesforce/wikitext`), and the split is `validation`, not `valid`.
 - macOS: `ps -o rss=` for RSS, `sysctl -n vm.swapusage` for swap; MPS `driver_allocated_memory` >> `current_allocated_memory` is a reserved pool, not a leak. Run one heavy process at a time.
 - Training checkpoints (`realmodel/checkpoints/best.pt`) hold model + optimizer state + epoch/step/bad_epochs; `--resume` warm-starts AdamW if optimizer state is absent (pre-resume-format checkpoints).
+- The official-math variants live in `spectre_torch/official.py` (vendored author code, SHA-256-pinned; editing the vendored file breaks the loader and tests — don't "fix" it, fix the wrapper) and `spectre_torch/official_causal.py` (R9 hybrid: author gate + causal conv; includes corrected `interp_complex_1d_cubic` — the vendored version interleaves real/imag across groups). Checkpoints are arch-tagged; `report.py` rebuilds the right surgery from the tag.
+- `realmodel/` commands must run with cwd = `realmodel/` (`cd realmodel && uv run ...`); from the repo root `uv run` resolves to a different interpreter without pytest/torch.
 
 ## Conventions
 
@@ -62,7 +64,7 @@ docs/audit-vs-official.md    Audit vs the author's official spectre.py (gate/pro
 implementation_from_whitepaper_author/  Vendored copy of jacobfa/fft spectre.py (commit 6aa353e) for stable audit refs
 reference/spec-code/         READ-ONLY verified reference crate (src/, tests/, bin/claims_report.rs)
 realmodel/                   Phase-2 PyTorch validation (uv-managed; see plan-realmodel.md)
-realmodel/spectre_torch/     gate/layer/surgery/data/evaluate/train/report/memlog/xval modules
+realmodel/spectre_torch/     gate/layer/surgery/data/evaluate/train/report/memlog/xval/official modules (official = vendored author code, SHA-pinned)
 realmodel/tests/             PyTorch test suite (layer equivalence, surgery, param counts)
 realmodel/xval-dump/         Rust crate dumping layer I/O for Python cross-validation
 realmodel/checkpoints/       Training checkpoints (gitignored)
@@ -75,7 +77,7 @@ realmodel/checkpoints/       Training checkpoints (gitignored)
 - Verify the reference: `cd reference/spec-code && cargo test` (91 tests).
 - PyTorch suite: `cd realmodel && uv run pytest tests/ -q` (10 tests).
 - Cross-validation: `cargo run --release --manifest-path realmodel/xval-dump/Cargo.toml` then `cd realmodel && uv run python -m spectre_torch.xval` (both must PASS ≤1e-4/1e-5).
-- Training: `cd realmodel && uv run python -m spectre_torch.train [--resume]`; report: `uv run python -m spectre_torch.report`.
+- Training: `cd realmodel && uv run python -m spectre_torch.train [--resume] [--official | --official-causal] [--cotraining] [--budget-minutes=N]`; report: `uv run python -m spectre_torch.report`. `--official` trains the vendored author implementation (R8, non-causal — collapses to a next-token copier); `--official-causal` is the R9 honest hybrid (author gate + causal conv). Leakage probe: `uv run python -m spectre_torch.leakage` (position-0 loss is the decisive number; a naive shuffle-the-future test cannot catch one-step copying).
 - If re-executing the plan from scratch: follow the ticket loop in `docs/plan-poc.md` §0 — read ticket → red (tests only) → green (transcribe spec) → ticket command → regression gate (`cargo test`) → commit.
 
 ## What to Verify

@@ -4,3 +4,4 @@ realmodel/checkpoints/
 __pycache__/
 realmodel/xval-dump/out.json
 realmodel/xval-dump/target/
+.DS_Store

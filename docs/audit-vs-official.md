@@ -120,6 +120,47 @@ wraps to `t mod N` and future-in-window tokens contribute to earlier positions.
 Re-run R5/R6 on both. This directly answers "is our math wrong?" without assuming which `n_fft`
 the paper used.
 
+### Result (R8): the official math leaks the future — proven
+
+R8 ran the vendored author implementation as the mixer (same protocol as R5). It hit val PPL
+1.13 within one epoch — an impossible score. The leakage test (`spectre_torch/leakage.py`) proves
+the mechanism:
+
+| model | loss at position 0 (honest ~6–8) | mean loss, first 64 pos |
+|---|---|---|
+| official SPECTRE math (1 epoch) | **0.0028** | 0.0039 |
+| our causal v1 (R5) | 6.42 | 3.97 |
+| stock GPT-2 (control) | 7.21 | 4.63 |
+
+Position 0 sees only token 0; predicting token 1 at 0.003 nats means token 1's identity enters
+position 0's representation through the mixer — the circular convolution. The trained gate
+collapsed to a near-pure one-step look-ahead kernel (broad-window shuffle moves loss by only
++0.0003, i.e. the "next-token copier" degenerate solution).
+
+Two testing notes for anyone reproducing:
+- A naive shuffle test (shuffle the future, re-measure loss) does NOT catch this: shuffling the
+  future also shuffles the targets, so the copier stays self-consistent (measured delta 0.0000).
+- The position-0 loss is the clean single-number proof: no causal model can beat ~6 nats there.
+
+### Bug found in the vendored code: `interp_complex_1d` scrambles real/imag across groups
+
+`interp_complex_1d` (vendored lines 30–90) stacks real/imag on dim=1 producing `(B, 2, G, K)`,
+then reshapes to `(B*G, 2, 1, K)` — which interleaves real and imaginary parts across groups.
+Constant anchors `1+0j` interpolate to `1+1j` (verified numerically). The official circular model
+trains *through* this bug (a fixed permutation is learnable), but it breaks any identity-style
+gate initialization. Our causal hybrid uses a corrected version (`interp_complex_1d_cubic` in
+`spectre_torch/official_causal.py`): same grid_sample bicubic math, correct axis order.
+
+## 8. R9: the honest hybrid — official gate + causal mixing
+
+The paper's *real* claim worth chasing is attention-parity at O(N log N) (Table 2: SDPA 39.4 vs
+SPECTRE 39.8), not the impossible Table 1 value. R9 (`spectre_torch/official_causal.py`) keeps
+the author's gate machinery verbatim (subclassing the vendored classes) and replaces only the
+mixing with a strictly causal zero-padded linear convolution — the same causality construction
+Caracal later adds to Fourier mixers. The gate is warm-started to near-identity so the transplant
+begins close to the original model. Causality is test-enforced at head, multihead, and full-model
+level (`tests/test_official_causal.py`: future-input invariance, spike test, near-identity init).
+
 ---
 
 ## 2. Gate — matches

@@ -9,6 +9,7 @@ dependencies = [
     "datasets",
     "numpy",
     "pytest",
+    "torch-dct>=0.1.6",
 ]
 
 [tool.pytest.ini_options]

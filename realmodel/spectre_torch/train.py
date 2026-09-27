@@ -28,6 +28,8 @@ from transformers import GPT2LMHeadModel
 from .data import blocks
 from .evaluate import perplexity
 from .memlog import MemLogger
+from .official import swap_gpt2_attention_official
+from .official_causal import swap_gpt2_attention_official_causal
 from .surgery import freeze_backbone, swap_gpt2_attention
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -123,10 +125,21 @@ HEARTBEAT_LAST = [0.0]
 def main() -> None:
     resume = "--resume" in sys.argv
     cotraining = "--cotraining" in sys.argv
+    official = "--official" in sys.argv
+    official_causal = "--official-causal" in sys.argv
+    budget_minutes = TIME_BUDGET_S / 60
+    for arg in sys.argv[1:]:
+        if arg.startswith("--budget-minutes="):
+            budget_minutes = float(arg.split("=", 1)[1])
     torch.manual_seed(42)
     mem = MemLogger("train")
     model = GPT2LMHeadModel.from_pretrained("gpt2")
-    swap_gpt2_attention(model)
+    if official_causal:
+        swap_gpt2_attention_official_causal(model)
+    elif official:
+        swap_gpt2_attention_official(model)
+    else:
+        swap_gpt2_attention(model)
     freeze_backbone(model)
     if cotraining:
         for p in model.parameters():
@@ -147,9 +160,17 @@ def main() -> None:
     backbone_scale = BACKBONE_LR_PEAK / LR_PEAK if cotraining else 0.0
     opt = torch.optim.AdamW(_param_groups(model, backbone_scale), lr=LR_PEAK)
     os.makedirs(CKPT_DIR, exist_ok=True)
-    best_path = os.path.join(CKPT_DIR, "best-cotraining.pt" if cotraining else "best.pt")
-    time_budget = 3 * 60 * 60 if cotraining else TIME_BUDGET_S
+    arch = "official-causal" if official_causal else ("official" if official else "v1")
+    ckpt_name = (
+        "best-official-causal.pt" if official_causal
+        else "best-official.pt" if official
+        else "best-cotraining.pt" if cotraining
+        else "best.pt"
+    )
+    best_path = os.path.join(CKPT_DIR, ckpt_name)
+    time_budget = budget_minutes * 60
     patience = 3 if cotraining else PATIENCE
+    print(f"arch: {arch} (checkpoint {ckpt_name}, budget {budget_minutes:.0f} min)")
 
     best_val = float("inf")
     bad_epochs = 0
@@ -173,11 +194,41 @@ def main() -> None:
     start = time.time()
     stopped = "completed"
 
+    def _validate_and_save(epoch: int, label: str) -> bool:
+        """Returns True if training should early-stop (patience exhausted)."""
+        nonlocal best_val, bad_epochs
+        val = _val_loss(model, val_blocks)
+        print(f"{label} val loss {val:.4f} (ppl {math.exp(val):.2f})")
+        mem.log(f"{label} val", force=True)
+        if val < best_val:
+            best_val = val
+            bad_epochs = 0
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "optimizer": opt.state_dict(),
+                    "val_loss": val,
+                    "step": step,
+                    "epoch": epoch,
+                    "bad_epochs": bad_epochs,
+                    "arch": arch,
+                },
+                best_path,
+            )
+            print(f"saved best (val {val:.4f})")
+        else:
+            bad_epochs += 1
+            if bad_epochs >= patience:
+                return True
+        return False
+
     for epoch in range(start_epoch, MAX_EPOCHS):
         perm = torch.randperm(train_blocks.shape[0], generator=torch.Generator().manual_seed(42 + epoch))
+        budget_hit = False
         for i in range(steps_per_epoch):
             if time.time() - start > time_budget:
                 stopped = f"time budget hit at step {step}"
+                budget_hit = True
                 break
             lr = _lr_at(step, total_steps)
             for g in opt.param_groups:
@@ -203,32 +254,13 @@ def main() -> None:
                 elapsed = time.time() - start
                 print(f"step {step} epoch {epoch} loss {batch_loss:.4f} lr {lr:.2e} tok/s {tokens_seen/elapsed:.0f}")
                 mem.log(f"step {step}", force=True)
-        else:
-            val = _val_loss(model, val_blocks)
-            print(f"epoch {epoch} val loss {val:.4f} (ppl {math.exp(val):.2f})")
-            mem.log(f"epoch {epoch} val", force=True)
-            if val < best_val:
-                best_val = val
-                bad_epochs = 0
-                torch.save(
-                    {
-                        "model": model.state_dict(),
-                        "optimizer": opt.state_dict(),
-                        "val_loss": val,
-                        "step": step,
-                        "epoch": epoch,
-                        "bad_epochs": bad_epochs,
-                    },
-                    best_path,
-                )
-                print(f"saved best (val {val:.4f})")
-            else:
-                bad_epochs += 1
-                if bad_epochs >= patience:
-                    stopped = f"early stop after epoch {epoch}"
-                    break
-            continue
-        break  # time budget hit inside the inner loop
+        if budget_hit:
+            # Partial epoch: still validate and checkpoint the progress made.
+            _validate_and_save(epoch, f"epoch {epoch} (partial, budget)")
+            break
+        if _validate_and_save(epoch, f"epoch {epoch}"):
+            stopped = f"early stop after epoch {epoch}"
+            break
 
     wall = time.time() - start
     print(f"TRAIN done: {stopped}, steps {step}, wall {wall/60:.1f} min, best val loss {best_val:.4f} (ppl {math.exp(best_val):.2f})")
