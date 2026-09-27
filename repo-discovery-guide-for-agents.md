@@ -8,7 +8,7 @@ A map of non-obvious facts about this repository: a Rust reproduction of the SPE
 - Update this guide in the same change when adding, removing, renaming, or discovering an expensive gotcha.
 - If `Last verified` is older than 3 days, treat the guide as suspect and re-verify.
 - Keep this guide updated before committing or pushing.
-- Last verified: 2026-09-26
+- Last verified: 2026-09-27
 
 ## Project Overview
 
@@ -26,7 +26,7 @@ This repository reproduces the SPECTRE attention computations (arXiv:2502.18394,
 - Reference numbers in the plan (test counts, timings, speed-ups) were measured on an 8-core Intel i3-N305; wall-clock expectations differ on other machines.
 - Running the reference tests creates `reference/spec-code/target/` — a build artifact, never commit it. The root `.gitignore` uses unanchored `target/` to cover it.
 - The root crate is a transcription of `reference/spec-code` (byte-identical as of 2026-09-26). Change both together, or record the divergence in `docs/deviations.md`.
-- The paper PDF's text layer is lossy (garbled glyph IDs in figure captions). Authoritative page images: `~/IdeaProjects/whitepapers/2502.18394v7 Spectre/` (001.jpg–018.jpg).
+- The paper PDF's text layer is lossy (garbled glyph IDs in figure captions); during development the paper was verified against page images of `docs/spectre-paper-2502.18394v7.pdf` (arXiv:2502.18394v7) rendered at high resolution.
 - `realmodel/` runs via `uv` (`cd realmodel && uv run ...`); the venv is Python 3.12, torch 2.14 with MPS. Tests need `pyproject.toml`'s `[tool.pytest.ini_options] pythonpath = ["."]` — don't run pytest with a clobbered cwd.
 - PyTorch batched SPECTRE layer: never use `torch.einsum` with stacked per-head weights — it materializes a (B,n,H,d_model,d) ~77GB broadcast intermediate. Concatenate per-head weights into (d_model, H·d) and use one plain matmul (GPT-2's c_attn pattern).
 - The all-pass gate init (l2.weight=0) zeroes the entire gate path — any test using it cannot catch gate-path bugs. Gate-path changes need the non-trivial-gate equivalence test (`test_batched_layer_equals_per_head_loop`).
@@ -47,6 +47,7 @@ This repository reproduces the SPECTRE attention computations (arXiv:2502.18394,
 ## Structure Map
 
 ```
+README.md                   Public-facing overview: what/how to run/headline result
 Cargo.toml, Cargo.lock       Root crate manifest — byte-identical to reference/spec-code
 src/                         14 modules, one per paper equation (+ bin/claims_report.rs)
 tests/                       5 integration suites (paper_literal, parallel, opcount, timing, learning)

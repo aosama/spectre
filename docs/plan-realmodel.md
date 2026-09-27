@@ -8,9 +8,9 @@
 
 **Tech stack:** Python 3.12 (via `uv` venv — system Python 3.14 is too new for torch wheels), `torch` (MPS backend), `transformers`, `datasets`, `numpy`. Rust side: one small throwaway crate `realmodel/xval-dump/` that depends on the root `spectre` crate to dump weights/inputs/outputs for cross-validation.
 
-**Spec:** the paper — page images at `~/IdeaProjects/whitepapers/2502.18394v7 Spectre/` (authoritative; the PDF text layer is lossy and garbles figure captions) plus `docs/spectre-paper-2502.18394v7.pdf` — the PoC plan at `docs/plan-poc.md`, and the verified Rust implementation at the repo root (`src/`, byte-identical to `reference/spec-code/`).
+**Spec:** the paper — `docs/spectre-paper-2502.18394v7.pdf` (arXiv:2502.18394v7; its text layer is lossy, so figure captions were verified against high-resolution page renders during development) — the PoC plan at `docs/plan-poc.md`, and the verified Rust implementation at the repo root (`src/`, byte-identical to `reference/spec-code/`).
 
-**Machine:** Apple M5 Pro, 15 cores, 48 GB RAM, MPS. HF CLI 1.33.0 is installed and authenticated.
+**Machine (reference):** Apple Silicon, 48 GB RAM, MPS backend. HF CLI installed and authenticated.
 
 ---
 
