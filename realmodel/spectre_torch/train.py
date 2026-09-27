@@ -9,6 +9,13 @@ realmodel/checkpoints/best.pt.
 Micro-batch is 8 with gradient accumulation x4: a full 32-sequence batch
 through the SPECTRE FFT path spikes MPS memory well past what a 48GB machine
 comfortably holds, while 8x4 keeps the optimizer math identical to batch 32.
+
+--cotraining: unfreeze the backbone at a 30x lower peak LR (1e-5) so the
+pretrained MLPs/LayerNorms can adapt around the transplanted SPECTRE layers.
+The R6 diagnosis attributed the 1.62x PPL gap to the backbone never having
+been co-trained with SPECTRE; this mode tests that hypothesis directly.
+Checkpoint goes to checkpoints/best-cotraining.pt so the frozen-backbone
+best.pt is never clobbered.
 """
 import math
 import os
@@ -31,6 +38,8 @@ MAX_EPOCHS = 10
 WARMUP = 100
 LR_PEAK = 3e-4
 LR_MIN = 2e-5
+BACKBONE_LR_PEAK = 1e-5
+BACKBONE_LR_MIN = 1e-6
 WD = 0.05
 CLIP = 1.0
 TIME_BUDGET_S = 30 * 60
@@ -39,23 +48,38 @@ LOG_EVERY = 25
 CKPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints")
 
 
-def _lr_at(step: int, total_steps: int) -> float:
+def _lr_at(step: int, total_steps: int, peak: float = LR_PEAK, floor: float = LR_MIN) -> float:
     if step < WARMUP:
-        return LR_PEAK * (step + 1) / WARMUP
+        return peak * (step + 1) / WARMUP
     t = (step - WARMUP) / max(total_steps - WARMUP, 1)
-    return LR_MIN + 0.5 * (LR_PEAK - LR_MIN) * (1 + math.cos(math.pi * t))
+    return floor + 0.5 * (peak - floor) * (1 + math.cos(math.pi * t))
 
 
-def _param_groups(model) -> list:
-    decay, no_decay = [], []
+def _param_groups(model, backbone_lr_scale: float = 0.0) -> list:
+    """SPECTRE params at full LR; backbone params at backbone_lr_scale x of it.
+
+    backbone_lr_scale=0 reproduces the frozen-backbone plan behavior (the
+    backbone params are simply excluded, so AdamW never sees them).
+    """
+    spectre_decay, spectre_no_decay = [], []
+    backbone_decay, backbone_no_decay = [], []
     for name, p in model.named_parameters():
         if not p.requires_grad:
             continue
-        (no_decay if p.ndim <= 1 or "ln." in name else decay).append(p)
-    return [
-        {"params": decay, "weight_decay": WD},
-        {"params": no_decay, "weight_decay": 0.0},
+        is_backbone = ".attn.spectre." not in name
+        decay = p.ndim > 1 and "ln." not in name
+        if is_backbone:
+            (backbone_decay if decay else backbone_no_decay).append(p)
+        else:
+            (spectre_decay if decay else spectre_no_decay).append(p)
+    groups = [
+        {"params": spectre_decay, "weight_decay": WD},
+        {"params": spectre_no_decay, "weight_decay": 0.0},
     ]
+    if backbone_lr_scale > 0 and (backbone_decay or backbone_no_decay):
+        groups.append({"params": backbone_decay, "weight_decay": WD, "lr_scale": backbone_lr_scale})
+        groups.append({"params": backbone_no_decay, "weight_decay": 0.0, "lr_scale": backbone_lr_scale})
+    return groups
 
 
 def _val_loss(model, val_blocks: torch.Tensor) -> float:
@@ -98,11 +122,15 @@ HEARTBEAT_LAST = [0.0]
 
 def main() -> None:
     resume = "--resume" in sys.argv
+    cotraining = "--cotraining" in sys.argv
     torch.manual_seed(42)
     mem = MemLogger("train")
     model = GPT2LMHeadModel.from_pretrained("gpt2")
     swap_gpt2_attention(model)
     freeze_backbone(model)
+    if cotraining:
+        for p in model.parameters():
+            p.requires_grad_(True)
     model.to(DEVICE)
     mem.log("after model load", force=True)
 
@@ -111,11 +139,17 @@ def main() -> None:
     steps_per_epoch = train_blocks.shape[0] // EFFECTIVE_BATCH
     total_steps = steps_per_epoch * MAX_EPOCHS
     print(f"train blocks: {train_blocks.shape[0]}, val blocks: {val_blocks.shape[0]}, steps/epoch: {steps_per_epoch} (micro {MICRO_BATCH} x {ACCUM_STEPS})")
+    if cotraining:
+        n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"cotraining mode: backbone unfrozen at {BACKBONE_LR_PEAK:.1e} peak ({n_trainable:,} trainable params)")
     mem.log("after data load", force=True)
 
-    opt = torch.optim.AdamW(_param_groups(model), lr=LR_PEAK)
+    backbone_scale = BACKBONE_LR_PEAK / LR_PEAK if cotraining else 0.0
+    opt = torch.optim.AdamW(_param_groups(model, backbone_scale), lr=LR_PEAK)
     os.makedirs(CKPT_DIR, exist_ok=True)
-    best_path = os.path.join(CKPT_DIR, "best.pt")
+    best_path = os.path.join(CKPT_DIR, "best-cotraining.pt" if cotraining else "best.pt")
+    time_budget = 3 * 60 * 60 if cotraining else TIME_BUDGET_S
+    patience = 3 if cotraining else PATIENCE
 
     best_val = float("inf")
     bad_epochs = 0
@@ -142,12 +176,12 @@ def main() -> None:
     for epoch in range(start_epoch, MAX_EPOCHS):
         perm = torch.randperm(train_blocks.shape[0], generator=torch.Generator().manual_seed(42 + epoch))
         for i in range(steps_per_epoch):
-            if time.time() - start > TIME_BUDGET_S:
+            if time.time() - start > time_budget:
                 stopped = f"time budget hit at step {step}"
                 break
             lr = _lr_at(step, total_steps)
             for g in opt.param_groups:
-                g["lr"] = lr
+                g["lr"] = lr * g.get("lr_scale", 1.0)
             opt.zero_grad(set_to_none=True)
             batch_loss = 0.0
             for micro in range(ACCUM_STEPS):
@@ -190,7 +224,7 @@ def main() -> None:
                 print(f"saved best (val {val:.4f})")
             else:
                 bad_epochs += 1
-                if bad_epochs >= PATIENCE:
+                if bad_epochs >= patience:
                     stopped = f"early stop after epoch {epoch}"
                     break
             continue

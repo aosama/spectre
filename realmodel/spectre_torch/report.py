@@ -18,17 +18,10 @@ DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 BASELINE_PPL = 30.3261  # R4, token-level WikiText-2 test
 PASS_RATIO = 1.10
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-CKPT_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints", "best.pt")
+_CKPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints")
+CKPT_FROZEN = os.path.join(_CKPT_DIR, "best.pt")
+CKPT_COTRAIN = os.path.join(_CKPT_DIR, "best-cotraining.pt")
 REPORT_PATH = os.path.join(REPO_ROOT, "docs", "realmodel-report.md")
-
-
-def _load_trained() -> tuple[GPT2LMHeadModel, dict]:
-    model = GPT2LMHeadModel.from_pretrained("gpt2")
-    swap_gpt2_attention(model)
-    ckpt = torch.load(CKPT_PATH, map_location="cpu", weights_only=False)
-    model.load_state_dict(ckpt["model"])
-    model.to(DEVICE).eval()
-    return model, ckpt
 
 
 def _load_at_init() -> GPT2LMHeadModel:
@@ -95,23 +88,80 @@ def _gate_pairwise_distance(model, inputs: torch.Tensor) -> float:
     return sum(dists) / len(dists)
 
 
+def _eval_checkpoint(path: str, diag_inputs: torch.Tensor) -> tuple[float, dict, dict]:
+    """Load a checkpoint, measure test PPL and gate diagnostics."""
+    model = GPT2LMHeadModel.from_pretrained("gpt2")
+    swap_gpt2_attention(model)
+    ckpt = torch.load(path, map_location="cpu", weights_only=False)
+    model.load_state_dict(ckpt["model"])
+    model.to(DEVICE).eval()
+    ppl = perplexity(model, loaders(8, "test"), DEVICE)
+    stats = _gate_magnitude_stats(model, diag_inputs)
+    stats["pairwise_cos_dist"] = _gate_pairwise_distance(model, diag_inputs)
+    del model
+    return ppl, ckpt, stats
+
+
 def main() -> None:
     test_blocks = blocks("test")
     diag_inputs = test_blocks[:10]  # 10 diverse 1024-token inputs, one per batch element
 
-    trained, ckpt = _load_trained()
-    spectre_ppl = perplexity(trained, loaders(8, "test"), DEVICE)
-    ratio = spectre_ppl / BASELINE_PPL
+    frozen_ppl, frozen_ckpt, frozen_stats = _eval_checkpoint(CKPT_FROZEN, diag_inputs)
+    frozen_ratio = frozen_ppl / BASELINE_PPL
+
+    cotrain_ppl, cotrain_ckpt, cotrain_stats = None, {}, {}
+    if os.path.exists(CKPT_COTRAIN):
+        cotrain_ppl, cotrain_ckpt, cotrain_stats = _eval_checkpoint(CKPT_COTRAIN, diag_inputs)
+    cotrain_ratio = cotrain_ppl / BASELINE_PPL if cotrain_ppl else None
 
     init_model = _load_at_init()
     init_stats = _gate_magnitude_stats(init_model, diag_inputs)
     init_stats["pairwise_cos_dist"] = _gate_pairwise_distance(init_model, diag_inputs)
     del init_model
 
-    trained_stats = _gate_magnitude_stats(trained, diag_inputs)
-    trained_stats["pairwise_cos_dist"] = _gate_pairwise_distance(trained, diag_inputs)
+    verdict = "PASS" if frozen_ratio <= PASS_RATIO else f"FAIL (ratio {frozen_ratio:.3f})"
 
-    verdict = "PASS" if ratio <= PASS_RATIO else f"FAIL (ratio {ratio:.3f})"
+    ppl_rows = [
+        "| model | PPL | ratio vs baseline |",
+        "| --- | --- | --- |",
+        "| GPT-2 small baseline (R4) | {:.4f} | 1.000 |".format(BASELINE_PPL),
+        "| SPECTRE, frozen backbone (R5) | {:.4f} | {:.3f} |".format(frozen_ppl, frozen_ratio),
+    ]
+    if cotrain_ppl:
+        ppl_rows.append("| SPECTRE, co-trained backbone (R5b) | {:.4f} | {:.3f} |".format(cotrain_ppl, cotrain_ratio))
+
+    gate_rows = [
+        "| metric | at init (all-pass) | frozen (R5) | co-trained (R5b) |",
+        "| --- | --- | --- | --- |",
+        "| mean abs(g) | {:.4f} | {:.4f} | {} |".format(
+            init_stats["mean_abs_g"], frozen_stats["mean_abs_g"],
+            "{:.4f}".format(cotrain_stats["mean_abs_g"]) if cotrain_stats else "—",
+        ),
+        "| bin std of abs(g) | {:.4f} | {:.4f} | {} |".format(
+            init_stats["bin_std"], frozen_stats["bin_std"],
+            "{:.4f}".format(cotrain_stats["bin_std"]) if cotrain_stats else "—",
+        ),
+        "| pairwise cosine distance | {:.4f} | {:.4f} | {} |".format(
+            init_stats["pairwise_cos_dist"], frozen_stats["pairwise_cos_dist"],
+            "{:.4f}".format(cotrain_stats["pairwise_cos_dist"]) if cotrain_stats else "—",
+        ),
+    ]
+
+    cotrain_summary = ""
+    if cotrain_ckpt:
+        cotrain_summary = (
+            "\n## Co-training summary (R5b)\n"
+            "\n"
+            "| item | value |\n"
+            "| --- | --- |\n"
+            "| best val loss | {:.4f} |\n"
+            "| best epoch | {} |\n"
+            "| schedule | SPECTRE 3e-4 + backbone 1e-5 (30x lower), cosine, patience 3 |\n"
+            "| trainable | 127,647,408 (all params) |\n"
+            "| wall | 84.6 min, 10/10 epochs, no early stop |\n".format(
+                cotrain_ckpt.get("val_loss", float("nan")), cotrain_ckpt.get("epoch", "?")
+            )
+        )
 
     lines = [
         "# SPECTRE real-model validation report",
@@ -122,7 +172,8 @@ def main() -> None:
         "| --- | --- |",
         "| base model | GPT-2 small (124M, 12 layers, 12 heads, d=768) |",
         "| surgery | all 12 attention blocks -> SPECTRE layers (warm init, D6) |",
-        "| trainable | 31,556,016 (SPECTRE only; backbone frozen) |",
+        "| trainable (R5) | 31,556,016 (SPECTRE only; backbone frozen) |",
+        "| trainable (R5b) | 127,647,408 (all params; backbone at 30x lower LR) |",
         "| data | WikiText-2 raw, 1024-token non-overlapping blocks |",
         "| hardware | Apple Silicon, MPS, float32 |",
         "",
@@ -135,29 +186,21 @@ def main() -> None:
         "",
         "## Perplexity (WikiText-2 test, token-level)",
         "",
-        "| model | PPL |",
-        "| --- | --- |",
-        "| GPT-2 small baseline (R4) | {:.4f} |".format(BASELINE_PPL),
-        "| SPECTRE fine-tuned (R5) | {:.4f} |".format(spectre_ppl),
-        "| ratio | {:.3f} |".format(ratio),
+        *ppl_rows,
         "",
-        "## Training summary (R5)",
+        "## Training summary (R5, frozen backbone)",
         "",
         "| item | value |",
         "| --- | --- |",
-        "| best val loss | {:.4f} |".format(ckpt.get("val_loss", float("nan"))),
-        "| best step | {} |".format(ckpt.get("step", "?")),
-        "| best epoch | {} |".format(ckpt.get("epoch", "?")),
+        "| best val loss | {:.4f} |".format(frozen_ckpt.get("val_loss", float("nan"))),
+        "| best step | {} |".format(frozen_ckpt.get("step", "?")),
+        "| best epoch | {} |".format(frozen_ckpt.get("epoch", "?")),
         "| schedule | AdamW 3e-4, warmup 100, cosine to 2e-5, wd 0.05, clip 1.0 |",
         "| effective batch | 32 (micro 8 x grad-accum 4) |",
-        "",
+        cotrain_summary,
         "## Gate adaptivity diagnostics (10 diverse inputs)",
         "",
-        "| metric | at init (all-pass) | after training |",
-        "| --- | --- | --- |",
-        "| mean abs(g) | {:.4f} | {:.4f} |".format(init_stats["mean_abs_g"], trained_stats["mean_abs_g"]),
-        "| bin std of abs(g) | {:.4f} | {:.4f} |".format(init_stats["bin_std"], trained_stats["bin_std"]),
-        "| pairwise cosine distance | {:.4f} | {:.4f} |".format(init_stats["pairwise_cos_dist"], trained_stats["pairwise_cos_dist"]),
+        *gate_rows,
         "",
         "Soft expectation: after training, higher bin-std (more spectrally",
         "selective) and higher pairwise distance (more input-discriminative).",
@@ -168,7 +211,9 @@ def main() -> None:
     os.makedirs(os.path.dirname(REPORT_PATH), exist_ok=True)
     with open(REPORT_PATH, "w") as f:
         f.write("\n".join(lines))
-    print(f"SPECTRE ppl: {spectre_ppl:.4f} (baseline {BASELINE_PPL:.4f}, ratio {ratio:.3f})")
+    print(f"SPECTRE (frozen backbone) ppl: {frozen_ppl:.4f} (baseline {BASELINE_PPL:.4f}, ratio {frozen_ratio:.3f})")
+    if cotrain_ppl:
+        print(f"SPECTRE (co-trained) ppl: {cotrain_ppl:.4f} (ratio {cotrain_ratio:.3f})")
     print(f"report written to {REPORT_PATH}")
     print(f"**Overall: {verdict}**")
 
