@@ -8,7 +8,7 @@ docs/plan-realmodel.md §1.1 for the rationale.
 import torch
 import torch.nn as nn
 
-from .gate import SpectreGate
+from .gate import SpectreGate, gelu_tanh
 
 
 def causal_conv_fft(v: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
@@ -68,7 +68,13 @@ class SpectreHead(nn.Module):
 
 
 class SpectreLayer(nn.Module):
-    """Multi-head SPECTRE layer: heads in parallel, concat, W_o projection."""
+    """Multi-head SPECTRE layer: heads in parallel, concat, W_o projection.
+
+    The forward path batches all heads into single ops (one matmul, one gate
+    batch, one FFT set) instead of looping per head: 12 heads x 12 layers of
+    small separate ops make MPS autograd the bottleneck, not the math.
+    Parameters and per-head modules are unchanged.
+    """
 
     def __init__(self, d_model: int, n_heads: int, n_fft: int, hidden: int):
         super().__init__()
@@ -77,6 +83,7 @@ class SpectreLayer(nn.Module):
         self.n_heads = n_heads
         self.n_fft = n_fft
         d_head = d_model // n_heads
+        self.d_head = d_head
         self.heads = nn.ModuleList(
             [SpectreHead(d_model, d_head, n_fft, hidden) for _ in range(n_heads)]
         )
@@ -84,6 +91,60 @@ class SpectreLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, n, d_model)
-        outs = [head(x) for head in self.heads]  # each (B, n, d_head)
-        concat = torch.cat(outs, dim=-1)  # (B, n, d_model)
-        return self.wo(concat)  # (B, n, d_model)
+        B, n, _ = x.shape
+        H, d, N = self.n_heads, self.d_head, self.n_fft
+        L = 2 * N
+
+        # One plain matmul with concatenated per-head weights (GPT-2's own
+        # c_attn pattern): (B, n, d_model) @ (d_model, H*d) -> (B, n, H*d).
+        # A broadcast einsum here materializes a (B, n, H, d_model, d)
+        # intermediate (~77GB at B=32) — that was the RAM blowup.
+        wq_all = torch.cat([h.wq for h in self.heads], dim=1)  # (d_model, H*d)
+        bq_all = torch.cat([h.bq for h in self.heads])  # (H*d)
+        wv_all = torch.cat([h.wv for h in self.heads], dim=1)
+        bv_all = torch.cat([h.bv for h in self.heads])
+
+        q = (x @ wq_all + bq_all).view(B, n, H, d)
+        v = (x @ wv_all + bv_all).view(B, n, H, d)
+
+        # Batched gate: per-head LN/MLP weights stacked, applied over (H, B, d)
+        q_mean = q.mean(dim=1)  # (B, H, d)
+        gates = [h.gate for h in self.heads]
+        ln_w = torch.stack([g.ln.weight for g in gates])  # (H, d)
+        ln_b = torch.stack([g.ln.bias for g in gates])
+        l1_w = torch.stack([g.l1.weight for g in gates])  # (H, hidden, d)
+        l1_b = torch.stack([g.l1.bias for g in gates])  # (H, hidden)
+        l2_w = torch.stack([g.l2.weight for g in gates])  # (H, 2F, hidden)
+        l2_b = torch.stack([g.l2.bias for g in gates])  # (H, 2F)
+        mrb = torch.stack([g.modrelu_bias for g in gates])  # (H, F)
+
+        q_h = q_mean.permute(1, 0, 2)  # (H, B, d) head-major
+        # LayerNorm per head (the gate's LN), batched over heads.
+        ln_mean = q_h.mean(dim=-1, keepdim=True)
+        ln_var = q_h.var(dim=-1, unbiased=False, keepdim=True)
+        q_ln = (q_h - ln_mean) / torch.sqrt(ln_var + 1e-5) * ln_w.unsqueeze(1) + ln_b.unsqueeze(1)
+        h_hid = torch.baddbmm(l1_b.unsqueeze(1), q_ln, l1_w.permute(0, 2, 1))  # (H, B, hidden)
+        h_hid = gelu_tanh(h_hid)
+        out2 = torch.baddbmm(l2_b.unsqueeze(1), h_hid, l2_w.permute(0, 2, 1))  # (H, B, 2F)
+        g = torch.complex(out2[..., 0::2], out2[..., 1::2])  # (H, B, F)
+        m = g.abs()
+        s = m + mrb.unsqueeze(1)  # (H, B, F)
+        safe_m = torch.where(m > 0, m, torch.ones_like(m))
+        scale = torch.where((s > 0) & (m > 0), s / safe_m, torch.zeros_like(m))
+        g = g * scale
+        # g: (H, B, F) complex
+
+        h_kern = torch.fft.irfft(g, n=N, dim=-1)  # (H, B, N) real kernel
+
+        # Causal conv, batched over (H*B) and channels d:
+        v_h = v.permute(2, 0, 1, 3).reshape(H * B, n, d)  # (H*B, n, d)
+        k_h = h_kern.reshape(H * B, N)  # (H*B, N)
+        v_pad = torch.zeros(H * B, L, d, device=x.device, dtype=x.dtype)
+        v_pad[:, :n, :] = v_h
+        k_pad = torch.zeros(H * B, L, device=x.device, dtype=x.dtype)
+        k_pad[:, :N] = k_h
+        v_hat = torch.fft.rfft(v_pad, n=L, dim=1)
+        k_hat = torch.fft.rfft(k_pad, n=L, dim=1)
+        y = torch.fft.irfft(v_hat * k_hat.unsqueeze(-1), n=L, dim=1)[:, :n, :]
+        y = y.reshape(H, B, n, d).permute(1, 2, 0, 3).reshape(B, n, H * d)
+        return self.wo(y)  # (B, n, d_model)

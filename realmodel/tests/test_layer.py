@@ -66,3 +66,25 @@ def test_shape_and_batch():
             x = torch.randn(B, n, d_model)
             y = layer(x)
             assert y.shape == (B, n, d_model), f"shape mismatch for B={B}, n={n}"
+
+
+def test_batched_layer_equals_per_head_loop():
+    """The batched SpectreLayer.forward must equal the per-head reference
+    (head.forward + concat + wo) with a NON-trivial gate — the all-pass gate
+    zeroes the gate path and would hide gate-pipeline bugs."""
+    torch.manual_seed(4)
+    d_model, n_heads, n_fft, hidden = 32, 4, 64, 16
+    layer = SpectreLayer(d_model, n_heads, n_fft, hidden)
+    # Make the gate non-trivial: random l2 weights and a nonzero modReLU bias.
+    with torch.no_grad():
+        for head in layer.heads:
+            head.gate.l2.weight.normal_(0, 0.5)
+            head.gate.l2.bias.normal_(0, 0.1)
+            head.gate.modrelu_bias.normal_(0, 0.05)
+    x = torch.randn(3, 48, d_model)
+    outs = [head(x) for head in layer.heads]
+    expected = layer.wo(torch.cat(outs, dim=-1))
+    actual = layer(x)
+    assert (actual - expected).abs().max() < 1e-5, (
+        f"batched path diverges from per-head loop: {(actual - expected).abs().max()}"
+    )
