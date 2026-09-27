@@ -22,7 +22,7 @@ Goal: verify our math matches the author's intent, component by component, so th
 | Warm init of W_q/W_v from c_attn, W_o from c_proj | ✅ matches (ours is a superset) |
 | Multi-head: chunk → per-head → concat → out_proj | ✅ matches |
 | Block: ln1 → mix → residual → ln2 → mlp → residual | ✅ matches |
-| **FFT mixing: causal vs. circular** | ⚠️ **unverified — depends on `fft_size`, which is not in the vendored file** |
+| **FFT mixing: causal vs. circular** | ⚠️ **official semantics are circular by design (forward + decode cache); training `n_fft` unknown** |
 | Grouped gate (G=4), anchor interpolation | ⚠️ real capacity difference (grouped + interpolated gate) |
 | DCT pooling vs. mean pooling | ⚠️ real difference (DCT default vs mean) |
 | Wavelet refinement | ⚪ optional, off by default in both |
@@ -40,7 +40,7 @@ a no-op when `n_fft == N` but only makes sense when `n_fft > N` (discard the wra
 which would make the official **effectively linear/causal, matching our approach**. So the
 causality "difference" may be a non-difference; it is unverified, not proven.
 
-## 1. The FFT mixing — unverified (depends on `fft_size`, not in the file)
+## 1. The FFT mixing — unverified config, but the code's semantics are circular by design
 
 ### Official (`spectre.py`, `SpectreHead.forward`, lines 506–551)
 
@@ -97,6 +97,21 @@ artifact; it is the structural difference **when `n_fft == N`**.
 > Caveat: this demo uses `n_fft == N` (8 == 8). If the paper trains with `n_fft > N`, the official
 > `rfft`/`irfft` zero-pads and the `[:, :N]` slice discards the wrap-around, making it linear/
 > causal — same as ours. We cannot know which without the training script, which is not in the repo.
+
+### Decode-path evidence: the code's semantics are circular by design
+
+The official `PrefixFFTCache` (used by `SpectreHead.decode_step` for autoregressive generation)
+implements **exactly a sliding circular window** of length `n_fft`:
+
+- `omega = -2π/n_fft`, ring buffers `V_buf`/`Q_buf` of length `n_fft`,
+- eviction of the token from `n_fft` steps ago via the conjugate phase `exp(jω·k·j)`,
+- output read at position `t mod N`.
+
+That machinery is mathematically equivalent to evaluating the **circular** convolution over the
+last `n_fft` tokens; it would be wrong (inconsistent with training) under a linear-convolution
+interpretation. So while the *training* `n_fft` value is not in the repo, the code's own decode
+path corroborates that circular mixing is the intended semantics — a window where position `t`
+wraps to `t mod N` and future-in-window tokens contribute to earlier positions.
 
 ### Recommendation
 
@@ -238,15 +253,21 @@ and block all match the official implementation at the architecture level.
 
 **But two findings need calibration (an honest correction to my first pass):**
 
-1. **Causality is unverified, not proven.** The official file has no causal mask and no explicit
-   zero-padding, but whether its mixing is circular or linear depends on `n_fft`, which is a
-   required argument with no default and is never set in `spectre.py` (the repo ships only
-   `spectre.py`, no training script). The `v_time[:, :N]` slice actually hints `n_fft > N`
-   (linear/causal), which would match our approach. So the "causality is the difference" claim is
-   **not established** — it is a hypothesis to test, not a finding.
-2. **The gate differs more than I framed.** The official uses grouped (G=4) + cubic-interpolated
+1. **Causality: the code's semantics are circular by design, but the training config is unknown.**
+   The official forward has no causal mask and no padding; with `n_fft == N` it is non-causal
+   (proven numerically above). The decode path (`PrefixFFTCache`: `ω = -2π/N`, ring buffer,
+   eviction, output at `t mod N`) implements sliding circular-window semantics, corroborating
+   circular as the intended design. What remains unconfirmed is the `n_fft` value used in
+   training — it is a required argument never set in the repo (which ships only `spectre.py`).
+2. **The gate differs materially.** The official uses grouped (G=4) + cubic-interpolated
    anchors with DCT pooling and a smooth modReLU; ours uses mean pooling, a single full-F gate,
    and a hard modReLU. These are real capacity differences, not cosmetic.
+3. **The official code never converts pretrained attention weights.** Its only init is random
+   (`_reset_parameters` covers the optional Toeplitz kernel only). Our warm-start from GPT-2's
+   c_attn is our own invention — reasonable for transplant, but not something the author's code
+   does or validates.
+4. **Wavelet refinement is active in the official default config** (`on_rate=0.1`: applied to
+   ~10% of batches during training, stochastic straight-through). Ours has none.
 
 **Everything else** (wavelet, spectral memory bank, Toeplitz kernel, PrefixFFT cache) is optional
 and off-by-default in the official code. Not bugs.
