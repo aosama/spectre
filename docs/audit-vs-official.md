@@ -17,28 +17,30 @@ Goal: verify our math matches the author's intent, component by component, so th
 | Area | Verdict |
 |------|---------|
 | Gate MLP (LN → Linear → GELU → Linear(2F) → interleave → modReLU) | ✅ matches |
-| modReLU formula | ✅ matches |
+| modReLU formula | ⚪ smooth `sqrt` (official) vs hard `where` (ours) — similar, not identical |
 | W_q / W_v projections (head_dim → head_dim, no bias) | ✅ matches |
 | Warm init of W_q/W_v from c_attn, W_o from c_proj | ✅ matches (ours is a superset) |
 | Multi-head: chunk → per-head → concat → out_proj | ✅ matches |
 | Block: ln1 → mix → residual → ln2 → mlp → residual | ✅ matches |
-| **FFT mixing: causal vs. circular** | ⚠️ **the one real difference** |
-| Grouped gate (G=4), anchor interpolation | ⚪ design choice, not a bug |
-| DCT pooling vs. mean pooling | ⚪ design choice |
+| **FFT mixing: causal vs. circular** | ⚠️ **unverified — depends on `fft_size`, which is not in the vendored file** |
+| Grouped gate (G=4), anchor interpolation | ⚠️ real capacity difference (grouped + interpolated gate) |
+| DCT pooling vs. mean pooling | ⚠️ real difference (DCT default vs mean) |
 | Wavelet refinement | ⚪ optional, off by default in both |
 | Training data (PG-19 vs WikiText-2) | ⚪ paper choice, not our bug |
-| **Non-causal FFT mixing** | 🔴 **the likely cause of the gap** |
+| **Non-causal FFT mixing** | ⚪ **unverified — depends on `fft_size`, not in the vendored file** |
 
-**One finding matters.** The official `forward()` mixes in the frequency domain with
-`rfft(V, n=n_fft)` and `irfft` and **no causal mask and no zero-padding** — that is a
-**circular (non-causal) convolution**. Our layer is **strictly causal** (zero-padded to 2N).
-Everything else is a design choice or an optional feature. The circular-vs-causal mismatch is
-the single most likely reason our fine-tuned SPECTRE underperforms the paper's from-scratch
-SPECTRE, and it is the cheapest thing to test.
+**One finding needs calibration.** The official `forward()` mixes in the frequency domain with
+`rfft(V, n=n_fft)` and `irfft` and slices `v_time[:, :N]` (line 553). Whether that is a
+**circular (non-causal)** or **linear (causal)** convolution depends entirely on `n_fft`, which is
+a **required argument with no default** (line 407) and is **not set anywhere in `spectre.py`** —
+the file ships with no training script, config, or example (the repo is only `spectre.py`). Our
+layer is **strictly causal** (zero-padded to 2N). So the one thing we cannot confirm from the
+vendored code is whether the official is circular or linear. Notably, the `v_time[:, :N]` slice is
+a no-op when `n_fft == N` but only makes sense when `n_fft > N` (discard the wrap-around tail) —
+which would make the official **effectively linear/causal, matching our approach**. So the
+causality "difference" may be a non-difference; it is unverified, not proven.
 
----
-
-## 1. The FFT mixing — the one real difference
+## 1. The FFT mixing — unverified (depends on `fft_size`, not in the file)
 
 ### Official (`spectre.py`, `SpectreHead.forward`, lines 506–551)
 
@@ -90,14 +92,18 @@ With a single input spike at t=2 and a random gate `g`:
 
 The official output at t=0 and t=1 is **nonzero** even though the input spike is at t=2 — the
 future token leaks backward. Ours is exactly zero (strictly causal). This is not a numerical
-artifact; it is the structural difference.
+artifact; it is the structural difference **when `n_fft == N`**.
+
+> Caveat: this demo uses `n_fft == N` (8 == 8). If the paper trains with `n_fft > N`, the official
+> `rfft`/`irfft` zero-pads and the `[:, :N]` slice discards the wrap-around, making it linear/
+> causal — same as ours. We cannot know which without the training script, which is not in the repo.
 
 ### Recommendation
 
-**Test it directly.** Add a `circular` flag to `SpectreLayer` (or a variant) that uses
-`rfft(x, n=N)` + `irfft` + `[:, :N]` — no 2N padding — matching the official forward. Re-run
-R5/R6. If the gap collapses, the FAIL was a causality artifact, not a broken layer. This is the
-cheapest, highest-leverage experiment left and it directly answers "is our math wrong?".
+**Test both ends.** Add a flag to `SpectreLayer` that lets us run the official's exact forward
+(`rfft(x, n=N)` + `irfft` + `[:, :N]`, no 2N padding) and compare against our causal version.
+Re-run R5/R6 on both. This directly answers "is our math wrong?" without assuming which `n_fft`
+the paper used.
 
 ---
 
@@ -124,26 +130,24 @@ g = torch.complex(out[:, 0::2], out[:, 1::2])
 g = modrelu(g, self.modrelu_bias)
 ```
 
-**Matches.** LN → Linear → GELU(tanh) → Linear(2F) → interleave → modReLU.
+**Architecture matches; specific choices differ.** The gate skeleton is the same — LN → Linear →
+GELU(tanh) → Linear(2F) → interleave → modReLU. But several concrete choices differ from the
+official, and these are real (not just "design"):
 
-**One difference worth noting (design, not a bug):**
+- **Pooling.** Ours does `q_mean = q.mean(dim=1)` (mean pooling). Official default is **DCT
+  pooling** (`DCTPooling`, first 64 DCT coefficients), configurable to attention or mean.
+- **Grouping + interpolation.** Official gate is **grouped**: `q_pool` → `B × G × 2` anchors
+  (`G = num_groups = 4`, `B = max(4, sqrt(F_half))` buckets), then those anchors are
+  **cubic-interpolated** up to `F_half` (lines 515–527), and modReLU runs over the flattened
+  `F_half × G` axis. Ours computes a **single gate directly at full `F`** (no grouping, no
+  interpolation). This is a genuine capacity difference — the grouped+interpolated gate is more
+  expressive and is the paper's actual mechanism, not a v1 simplification.
+- **modReLU.** Official `ComplexModReLU.forward` (lines 92–108): `scale = relu(|z| + b) /
+  sqrt(|z|² + eps²)` (smooth). Ours (`gate.py` `modrelu`): `scale = where(s>0 & m>0, s/m, 0)`
+  (hard, matching the Rust oracle). Functionally similar but numerically distinct near `|z| ≈ 0`.
 
-- The official gate is **grouped**: `q_pool` is projected to `B × G × 2` anchors, then those
-  anchors are **cubic-interpolated** up to `F_half` (lines 515–527). `G = num_groups = 4`,
-  `B = max(4, sqrt(F_half))` buckets. modReLU is applied over the flattened `F_half × G` axis.
-- Ours computes the gate **directly at full `F`** (no grouping, no interpolation). This is the
-  paper's simpler v1 gate and matches our Rust PoC.
-
-This is a real architectural difference but it is a **simplification we chose**, not a
-transcription error. It changes capacity (grouped + interpolated gate is more expressive) but
-is not obviously the cause of a 1.6× gap. Low priority.
-
-### modReLU — matches exactly
-
-Official `ComplexModReLU.forward` (lines 92–108): `scale = relu(|z| + b) / sqrt(|z|² + eps²)`.
-Ours (`gate.py` `modrelu`): `scale = where(s>0 & m>0, s/m, 0)` with `s = m + b`. Same formula;
-ours uses a hard `where` (matches the Rust oracle), official uses a smooth `sqrt` for gradient
-stability. Functionally equivalent.
+These are not transcription errors, but they are real differences in expressive power, and the
+grouped+interpolated gate is worth reproducing if the gap persists.
 
 ---
 
@@ -229,17 +233,24 @@ circular variant.
 
 ## 7. Verdict
 
-**Our layer math is correct.** The gate, modReLU, projections, warm init, multi-head, and block
-all match the official implementation. The **only** structural difference is **causality**:
-official = circular (non-causal) FFT mixing; ours = strictly causal. This is almost certainly
-intentional in the paper (global mixer, fixed context, from-scratch training) and is the correct
-choice for our autoregressive setup — but it makes our model a different one, and it is the most
-likely contributor to the 1.62× R6 gap.
+**Our layer math is structurally correct.** The gate skeleton, projections, warm init, multi-head,
+and block all match the official implementation at the architecture level.
 
-**Everything else** (grouped/interpolated gate, DCT pooling, wavelet, memory bank, Toeplitz,
-PrefixFFT) is either optional/off-by-default in the official code or a deliberate simplification
-we made. None of those are bugs.
+**But two findings need calibration (an honest correction to my first pass):**
 
-**Next step:** add the circular-mixing variant and re-run R5/R6. If the gap narrows, the FAIL
-was a causality artifact. If it persists, the gap is structural (convolution vs. attention) and
-the next lever is attention distillation (Hedgehog-style) or the Taylor-Calibrate init.
+1. **Causality is unverified, not proven.** The official file has no causal mask and no explicit
+   zero-padding, but whether its mixing is circular or linear depends on `n_fft`, which is a
+   required argument with no default and is never set in `spectre.py` (the repo ships only
+   `spectre.py`, no training script). The `v_time[:, :N]` slice actually hints `n_fft > N`
+   (linear/causal), which would match our approach. So the "causality is the difference" claim is
+   **not established** — it is a hypothesis to test, not a finding.
+2. **The gate differs more than I framed.** The official uses grouped (G=4) + cubic-interpolated
+   anchors with DCT pooling and a smooth modReLU; ours uses mean pooling, a single full-F gate,
+   and a hard modReLU. These are real capacity differences, not cosmetic.
+
+**Everything else** (wavelet, spectral memory bank, Toeplitz kernel, PrefixFFT cache) is optional
+and off-by-default in the official code. Not bugs.
+
+**Next step:** reproduce the official's exact gate (grouped + interpolated + DCT) and run both the
+causal and the `n_fft == N` circular mixing variants. This closes the two open questions without
+assuming either.
