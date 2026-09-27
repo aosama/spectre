@@ -1,0 +1,12 @@
+[project]
+name = "spectre-realmodel"
+version = "0.1.0"
+description = "SPECTRE real-model validation (GPT-2 small, PyTorch, MPS)"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "transformers",
+    "datasets",
+    "numpy",
+    "pytest",
+]

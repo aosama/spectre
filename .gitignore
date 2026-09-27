@@ -1,1 +1,3 @@
 target/
+realmodel/.venv/
+realmodel/checkpoints/
