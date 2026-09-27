@@ -1,3 +1,5 @@
 target/
 realmodel/.venv/
 realmodel/checkpoints/
+realmodel/xval-dump/out.json
+realmodel/xval-dump/target/
