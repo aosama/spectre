@@ -1,5 +1,6 @@
 target/
 realmodel/.venv/
 realmodel/checkpoints/
+__pycache__/
 realmodel/xval-dump/out.json
 realmodel/xval-dump/target/
