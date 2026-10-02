@@ -1,5 +1,7 @@
 # SPECTRE Real-Model Validation — Implementation Plan
 
+> **HISTORICAL PLAN — Phase 2, kept as a record of the GPT-2 experiment (do not re-execute it verbatim).** This plan designed the GPT-2 transplant that is now run from `realmodel/`. Its experiment design is still accurate (causal-convolution deviation, warm init from `c_attn`, frozen backbone). Two paths changed since 2026: the Rust oracle it cross-validates against now lives at `oracle/` (it was at the repo root, byte-identical to the now-removed `reference/spec-code/`), and `realmodel/xval-dump/`'s dependency path is now `../../oracle` (was `../..`) — so run `cargo` from `oracle/`. See the top-level README for the current layout.
+
 > **For agentic workers:** This plan is fully autonomous: never stop to ask a human. Every open question is settled in §3 (Decision Log). §0 tells you what to do when something fails. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Answer the question the PoC could not: *does SPECTRE actually work when swapped into a real pretrained language model?* Take GPT-2 small (124M), replace all 12 attention layers with SPECTRE layers (warm-initialized from the original attention weights), freeze the entire backbone, fine-tune **only** the SPECTRE parameters on WikiText-2, and compare test perplexity against the untouched baseline. Success = SPECTRE perplexity within 10% of baseline.

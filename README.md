@@ -2,21 +2,36 @@
 
 An independent reproduction of **SPECTRE** — "An FFT-Based Efficient Drop-In Replacement to Self-Attention for Long Contexts" ([arXiv:2502.18394](https://arxiv.org/abs/2502.18394)) — carried one step beyond the paper: the mechanism is transplanted into a real pretrained language model (GPT-2 small) to measure what it actually costs on real text. Along the way we fixed the paper's causal-mixing flaw and added a strictly-causal gate, so we also carry our own experiments here.
 
+## Where everything is
+
+Open the repo and you see four folders that are **not ours** (the paper's math) and one that **is** (our experiments). This split is intentional — a first-timer should never have to guess whose code a file is.
+
+```
+spectre/
+├── oracle/            # the PAPER'S OWN MATH — the Rust reference impl we must match  (NOT ours)
+├── paper/             # the source paper, arXiv:2502.18394v7                            (NOT ours)
+├── vendored/          # the paper author's own PyTorch `spectre.py`, hash-pinned         (NOT ours)
+├── realmodel/         # OUR experiments — GPT-2 transplant + the R9/R10 fixes            (OURS)
+├── other_white_papers/# research context: Caracal / CAT lineage                          (NOT ours)
+├── docs/              # plans, validation report, deviations log, claims audit           (records)
+├── AGENTS.md          # project north star
+└── README.md          # this file
+```
+
 ## What is in this repo
 
-The repo contains four different "SPECTREs". We keep them visually distinct — module names in the Python package and folder names below tell you exactly which one you're looking at.
+The repo carries four different "SPECTREs". We keep them visually distinct — folder names, the vendored SHA-256 pin, and role-based module names tell you exactly which one you're looking at.
 
 | Layer | What it is | Who wrote it | Where |
 | --- | --- | --- | --- |
-| Rust crate (`src/`) | Faithful `f64` reproduction of every paper equation, oracle-tested with exact deterministic op counts | Not ours (the paper's math) | root `src/`, `tests/`, `Cargo.toml` |
-| Reference copy (`reference/`) | Byte-identical mirror of the committed Rust source + the paper's v7 doc | Not ours | `reference/` |
+| Oracle crate (`oracle/`) | Faithful `f64` reproduction of every paper equation, oracle-tested with exact deterministic op counts. The canonical reference; every PyTorch number here must match it | Not ours (the paper's math) | `oracle/` (moved from root `src/`) |
 | Paper PDF | The source paper (v7) | Not ours | `paper/spectre-paper-2502.18394v7.pdf` |
 | Vendored author code (`spectre.py`) | The paper author's own `f64` PyTorch implementation, hash-pinned to a SHA-256 | Not ours | `vendored/` |
 | PyTorch package (`realmodel/spectre_torch/`) | GPT-2 small with attention surgically replaced by SPECTRE layers | **Ours** | `realmodel/spectre_torch/` |
 | Execution plans & reports | The plans, the validation report, the deviations log, the claims audit | Not ours | `docs/` |
 | Research context (`from-grok.md`) | Caracal / CAT lineage — we independently reinvented the fix | Not ours | `other_white_papers/` |
 
-The Rust crate is the *oracle*: every PyTorch change in `realmodel/spectre_torch/` must stay numerically faithful to it.
+The oracle at `oracle/` is the *oracle*: every PyTorch change in `realmodel/spectre_torch/` must stay numerically faithful to it. (The old `reference/spec-code/` mirror was byte-identical to the oracle and has been removed — there is now exactly one copy, so there is no "which one is real?" ambiguity.)
 
 ## Where things live — the PyTorch package
 
@@ -33,11 +48,12 @@ All experiments live in `realmodel/spectre_torch/`. Modules are named by **role*
 
 ## Running it
 
-Root Rust crate (no GPU needed):
+The oracle crate lives in `oracle/` (it moved off the root a while ago so the root stops looking like a tangled Rust+Python project). Run cargo from there:
 
 ```bash
+cd oracle
 cargo test                                            # 74 tests
-cargo run --release --features opcount --bin claims_report -- docs/claims-report.md
+cargo run --release --features opcount --bin claims_report -- ../../docs/claims-report.md
 ```
 
 PyTorch real-model validation (Python 3.12, Apple Silicon / CPU; ~2.5 GB RAM):
