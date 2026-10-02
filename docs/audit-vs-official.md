@@ -58,7 +58,7 @@ for **all** `s`, including `s > m` — i.e. **future tokens**. There is no causa
 `tril`, no zero-padding anywhere in the file (grep for `causal|mask|tril|triu` returns only the
 wavelet `on_mask`).
 
-### Ours (`layer.py`, `SpectreHead.forward` + `causal_conv_fft`)
+### Ours (`v1_spectre.py`, `SpectreHead.forward` + `causal_conv_fft`)
 
 ```python
 h = torch.fft.irfft(g, n=self.n_fft, dim=-1)
@@ -159,7 +159,7 @@ the author's gate machinery verbatim (subclassing the vendored classes) and repl
 mixing with a strictly causal zero-padded linear convolution — the same causality construction
 Caracal later adds to Fourier mixers. The gate is warm-started to near-identity so the transplant
 begins close to the original model. Causality is test-enforced at head, multihead, and full-model
-level (`tests/test_official_causal.py`: future-input invariance, spike test, near-identity init).
+level (`tests/test_causal_hybrid.py`: future-input invariance, spike test, near-identity init).
 
 ---
 
@@ -177,7 +177,7 @@ self.q_norm  = nn.LayerNorm(embed_dim)
 self.modrelu = ComplexModReLU(self.F_half * self.G)
 ```
 
-### Ours (`gate.py`, `SpectreGate.forward`)
+### Ours (`v1_gate.py`, `SpectreGate.forward`)
 
 ```python
 h = gelu_tanh(self.l1(self.ln(q_mean)))
@@ -199,7 +199,7 @@ official, and these are real (not just "design"):
   interpolation). This is a genuine capacity difference — the grouped+interpolated gate is more
   expressive and is the paper's actual mechanism, not a v1 simplification.
 - **modReLU.** Official `ComplexModReLU.forward` (lines 92–108): `scale = relu(|z| + b) /
-  sqrt(|z|² + eps²)` (smooth). Ours (`gate.py` `modrelu`): `scale = where(s>0 & m>0, s/m, 0)`
+   sqrt(|z|² + eps²)` (smooth). Ours (`v1_gate.py` `modrelu`): `scale = where(s>0 & m>0, s/m, 0)`
   (hard, matching the Rust oracle). Functionally similar but numerically distinct near `|z| ≈ 0`.
 
 These are not transcription errors, but they are real differences in expressive power, and the
