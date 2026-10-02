@@ -7,7 +7,7 @@ import os
 
 import torch
 
-from .layer import SpectreLayer
+from .v1_spectre import SpectreLayer
 
 _LAYER_THRESHOLD = 1e-4
 _RFFT_THRESHOLD = 1e-5
@@ -27,7 +27,7 @@ def _load_layer(dump: dict) -> SpectreLayer:
             head.bq.zero_()
             head.bv.zero_()
             g = hd["gate"]
-            gate = head.gate
+            gate = head.v1_gate
             gate.ln.weight.copy_(torch.tensor(g["ln_gamma"], dtype=f32))
             gate.ln.bias.copy_(torch.tensor(g["ln_beta"], dtype=f32))
             # Rust Linear stores (in x out) and computes w^T x; PyTorch

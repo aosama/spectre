@@ -12,9 +12,9 @@ from transformers import GPT2LMHeadModel
 
 from .data import blocks, loaders
 from .evaluate import perplexity
-from .chunked_causal import causal_query_pools
-from .official import swap_gpt2_attention_official
-from .official_causal import swap_gpt2_attention_official_causal
+from .r10_causal import causal_query_pools
+from .paper_spectre import swap_gpt2_attention_official
+from .causal_hybrid import swap_gpt2_attention_official_causal
 from .surgery import swap_gpt2_attention
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -76,13 +76,13 @@ def _gate_magnitude_stats(model, inputs: torch.Tensor, causal_chunks: int = 1) -
         for head in block.attn.spectre.heads:
             q = x @ head.wq + head.bq  # (B, n, d)
             if causal_chunks == 1:
-                g = head.gate(q.mean(dim=1))  # (B, F) legacy descriptor
+                g = head.v1_gate(q.mean(dim=1))  # (B, F) legacy descriptor
                 mag = g.abs()
                 all_mean.append(mag.mean().item())
                 all_std.append(mag.std(dim=1).mean().item())
             else:
                 pools = causal_query_pools(q, causal_chunks)  # (B, C, d)
-                g = torch.stack([head.gate(pools[:, i]) for i in range(causal_chunks)], dim=1)  # (B, C, F)
+                g = torch.stack([head.v1_gate(pools[:, i]) for i in range(causal_chunks)], dim=1)  # (B, C, F)
                 mag = g.abs()
                 all_mean.append(mag.mean().item())
                 all_std.append(mag.std(dim=2).mean().item())
@@ -101,10 +101,10 @@ def _gate_pairwise_distance(model, inputs: torch.Tensor, causal_chunks: int = 1)
         for head in block.attn.spectre.heads:
             q = x @ head.wq + head.bq
             if causal_chunks == 1:
-                g = head.gate(q.mean(dim=1))  # (B, F)
+                g = head.v1_gate(q.mean(dim=1))  # (B, F)
             else:
                 pools = causal_query_pools(q, causal_chunks)  # (B, C, d)
-                g = torch.stack([head.gate(pools[:, i]) for i in range(causal_chunks)], dim=1)  # (B, C, F)
+                g = torch.stack([head.v1_gate(pools[:, i]) for i in range(causal_chunks)], dim=1)  # (B, C, F)
             gv = torch.view_as_real(g)
             gv = gv.reshape(g.shape[0], -1) if causal_chunks == 1 else gv.reshape(-1, gv.shape[-1])
             gv = gv / gv.norm(dim=1, keepdim=True).clamp_min(1e-8)

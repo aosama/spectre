@@ -6,7 +6,7 @@ Run: cd realmodel && uv run python -m pytest tests/ -q
 import numpy as np
 import torch
 
-from spectre_torch.layer import SpectreHead, SpectreLayer, causal_conv_fft
+from spectre_torch.v1_spectre import SpectreHead, SpectreLayer, causal_conv_fft
 
 
 def test_rfft_roundtrip():
@@ -21,7 +21,7 @@ def test_all_pass_gate_is_identity():
     d_model, d_head, n_fft, hidden = 32, 8, 64, 16
     head = SpectreHead(d_model, d_head, n_fft, hidden)
     with torch.no_grad():
-        head.gate.l2.weight.zero_()  # g == (1, 0) for every bin
+        head.v1_gate.l2.weight.zero_()  # g == (1, 0) for every bin
     x = torch.randn(2, 40, d_model)
     v = x @ head.wv + head.bv
     out = head(x)
@@ -78,9 +78,9 @@ def test_batched_layer_equals_per_head_loop():
     # Make the gate non-trivial: random l2 weights and a nonzero modReLU bias.
     with torch.no_grad():
         for head in layer.heads:
-            head.gate.l2.weight.normal_(0, 0.5)
-            head.gate.l2.bias.normal_(0, 0.1)
-            head.gate.modrelu_bias.normal_(0, 0.05)
+            head.v1_gate.l2.weight.normal_(0, 0.5)
+            head.v1_gate.l2.bias.normal_(0, 0.1)
+            head.v1_gate.modrelu_bias.normal_(0, 0.05)
     x = torch.randn(3, 48, d_model)
     outs = [head(x) for head in layer.heads]
     expected = layer.wo(torch.cat(outs, dim=-1))

@@ -5,8 +5,8 @@ Run: cd realmodel && uv run python -m pytest tests/ -q
 import torch
 from transformers import GPT2LMHeadModel
 
-from spectre_torch.official import official
-from spectre_torch.official_causal import (
+from spectre_torch.paper_spectre import official
+from spectre_torch.causal_hybrid import (
     CausalSpectreHead,
     CausalSpectreMultiHead,
     make_gate_near_identity,

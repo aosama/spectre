@@ -25,8 +25,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .chunked_causal import causal_query_pools, chunked_causal_conv
-from .official import SpectreAttentionOfficial, official
+from .r10_causal import causal_query_pools, chunked_causal_conv
+from .paper_spectre import SpectreAttentionOfficial, official
 from .surgery import D_HEAD
 
 N_FFT = 1024

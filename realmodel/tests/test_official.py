@@ -7,7 +7,7 @@ import hashlib
 import torch
 from transformers import GPT2LMHeadModel
 
-from spectre_torch.official import (
+from spectre_torch.paper_spectre import (
     PINNED_SHA256,
     VENDORED_PATH,
     load_official_module,
@@ -28,8 +28,8 @@ def test_vendored_copy_matches_sha_pin():
 def test_loader_rejects_tampered_copy(tmp_path, monkeypatch):
     bad = tmp_path / "spectre.py"
     bad.write_text("# tampered\n")
-    monkeypatch.setattr("spectre_torch.official.VENDORED_PATH", bad)
-    import spectre_torch.official as official_mod
+    monkeypatch.setattr("spectre_torch.paper_spectre.VENDORED_PATH", bad)
+    import spectre_torch.paper_spectre as official_mod
 
     original = official_mod._OFFICIAL_MODULE
     official_mod._OFFICIAL_MODULE = None

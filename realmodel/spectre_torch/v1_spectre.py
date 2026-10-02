@@ -14,8 +14,8 @@ causality tests vacuous).
 import torch
 import torch.nn as nn
 
-from .chunked_causal import causal_query_pools, chunked_causal_conv
-from .gate import SpectreGate, gelu_tanh
+from .r10_causal import causal_query_pools, chunked_causal_conv
+from .v1_gate import SpectreGate, gelu_tanh
 
 
 def causal_conv_fft(v: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
@@ -61,7 +61,7 @@ class SpectreHead(nn.Module):
         self.bq = nn.Parameter(torch.zeros(d_head))
         self.wv = nn.Parameter(torch.empty(d_model, d_head))
         self.bv = nn.Parameter(torch.zeros(d_head))
-        self.gate = SpectreGate(d_head, n_fft, hidden)
+        self.v1_gate = SpectreGate(d_head, n_fft, hidden)
         # Xavier/Glorot-uniform, matching Rust nn::Linear::new.
         a = (6.0 / (d_model + d_head)) ** 0.5
         nn.init.uniform_(self.wq, -a, a)
@@ -75,10 +75,10 @@ class SpectreHead(nn.Module):
         """(B, C, n_fft) per-chunk kernels: causal pools for R10, full-window mean for legacy."""
         c = self.n_chunks
         if c == 1:
-            g = self.gate(q.mean(dim=1)).unsqueeze(1)  # (B, 1, F) legacy: pool over the whole window
+            g = self.v1_gate(q.mean(dim=1)).unsqueeze(1)  # (B, 1, F) legacy: pool over the whole window
         else:
             pools = causal_query_pools(q, c)  # (B, C, d_head)
-            g = torch.stack([self.gate(pools[:, i]) for i in range(c)], dim=1)  # (B, C, F)
+            g = torch.stack([self.v1_gate(pools[:, i]) for i in range(c)], dim=1)  # (B, C, F)
         return torch.fft.irfft(g, n=self.n_fft, dim=-1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -135,7 +135,7 @@ class SpectreLayer(nn.Module):
         v = (x @ wv_all + bv_all).view(B, n, H, d)
 
         # Batched gate: per-head LN/MLP weights stacked, applied over (H, B*C, d)
-        gates = [h.gate for h in self.heads]
+        gates = [h.v1_gate for h in self.heads]
         ln_w = torch.stack([g.ln.weight for g in gates])  # (H, d)
         ln_b = torch.stack([g.ln.bias for g in gates])
         l1_w = torch.stack([g.l1.weight for g in gates])  # (H, hidden, d)

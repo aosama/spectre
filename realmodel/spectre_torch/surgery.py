@@ -8,7 +8,7 @@ key projection). Everything non-SPECTRE is frozen.
 import torch
 import torch.nn as nn
 
-from .layer import SpectreLayer
+from .v1_spectre import SpectreLayer
 
 N_FFT = 1024
 GATE_HIDDEN = 64

@@ -28,8 +28,8 @@ import torch
 from transformers import GPT2LMHeadModel
 
 from .data import blocks
-from .official import swap_gpt2_attention_official
-from .official_causal import swap_gpt2_attention_official_causal
+from .paper_spectre import swap_gpt2_attention_official
+from .causal_hybrid import swap_gpt2_attention_official_causal
 from .surgery import swap_gpt2_attention
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"

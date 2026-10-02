@@ -1,12 +1,12 @@
 """R8: the official SPECTRE math, imported directly from the vendored author code.
 
 Rather than re-transcribing the author's implementation (audit in
-docs/audit-vs-official.md), we load implementation_from_whitepaper_author/spectre.py
+docs/audit-vs-official.md), we load vendored/spectre.py
 verbatim and build the GPT-2 transplant on top of it. A SHA-256 pin refuses to
 load anything other than the audited copy, so "our math matches Jacob's" holds
 by construction, not by transcription discipline.
 
-Differences vs our v1 layer (realmodel/spectre_torch/layer.py), all inherited
+Differences vs our v1 layer (realmodel/spectre_torch/v1_spectre.py), all inherited
 from the official code:
   - grouped gate: G=4 groups, B=max(4, sqrt(F_half)) anchors, cubic-interpolated
   - DCT pooling of Q (first 64 DCT components), not mean pooling
@@ -32,7 +32,7 @@ import torch.nn as nn
 from .surgery import D_HEAD, D_MODEL, N_HEADS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-VENDORED_PATH = _REPO_ROOT / "implementation_from_whitepaper_author" / "spectre.py"
+VENDORED_PATH = _REPO_ROOT / "vendored" / "spectre.py"
 PINNED_SHA256 = "ae63a56a3ad549d561dee67eb65f2267cadc9e5052fabcf4b45dc74965dcfbe2"
 
 N_FFT_OFFICIAL = 1024
@@ -52,7 +52,7 @@ def load_official_module():
             f"  expected {PINNED_SHA256}\n"
             f"  got      {digest}\n"
             "The vendored copy must stay byte-identical to jacobfa/fft@spectre.py "
-            "(see implementation_from_whitepaper_author/README.md)."
+            "(see vendored/README.md)."
         )
     spec = importlib.util.spec_from_file_location("spectre_official_vendored", VENDORED_PATH)
     module = importlib.util.module_from_spec(spec)

@@ -1,11 +1,11 @@
 # Audit: our `realmodel/spectre_torch` vs. the official author implementation
 
 **Date:** 2026-09-27
-**Official source:** `implementation_from_whitepaper_author/spectre.py` (vendored copy of
+**Official source:** `vendored/spectre.py` (vendored copy of
 https://github.com/jacobfa/fft/blob/main/spectre.py, commit
 `6aa353e1f4e52b36fec51ab0c58e860f394597c8`, SHA-256
 `ae63a56a3ad549d561dee67eb65f2267cadc9e5052fabcf4b45dc74965dcfbe2`).
-**Our code:** `realmodel/spectre_torch/` (`layer.py`, `gate.py`, `surgery.py`, `train.py`, `data.py`).
+**Our code:** `realmodel/spectre_torch/` (`v1_spectre.py` (formerly `layer.py`), `v1_gate.py` (formerly `gate.py`), `surgery.py`, `train.py`, `data.py`).
 
 Goal: verify our math matches the author's intent, component by component, so the R6 FAIL verdict
 (ratio 1.62) is not an artifact of a transcription bug in our layer.
@@ -149,12 +149,12 @@ then reshapes to `(B*G, 2, 1, K)` — which interleaves real and imaginary parts
 Constant anchors `1+0j` interpolate to `1+1j` (verified numerically). The official circular model
 trains *through* this bug (a fixed permutation is learnable), but it breaks any identity-style
 gate initialization. Our causal hybrid uses a corrected version (`interp_complex_1d_cubic` in
-`spectre_torch/official_causal.py`): same grid_sample bicubic math, correct axis order.
+`spectre_torch/causal_hybrid.py (formerly official_causal.py)`): same grid_sample bicubic math, correct axis order.
 
 ## 8. R9: the honest hybrid — official gate + causal mixing
 
 The paper's *real* claim worth chasing is attention-parity at O(N log N) (Table 2: SDPA 39.4 vs
-SPECTRE 39.8), not the impossible Table 1 value. R9 (`spectre_torch/official_causal.py`) keeps
+SPECTRE 39.8), not the impossible Table 1 value. R9 (`spectre_torch/causal_hybrid.py (formerly official_causal.py)`) keeps
 the author's gate machinery verbatim (subclassing the vendored classes) and replaces only the
 mixing with a strictly causal zero-padded linear convolution — the same causality construction
 Caracal later adds to Fourier mixers. The gate is warm-started to near-identity so the transplant

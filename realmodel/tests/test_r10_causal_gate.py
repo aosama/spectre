@@ -21,9 +21,9 @@ import numpy as np
 import torch
 from transformers import GPT2LMHeadModel
 
-from spectre_torch.chunked_causal import causal_query_pools, chunk_starts, chunked_causal_conv
-from spectre_torch.layer import SpectreLayer
-from spectre_torch.official_causal import (
+from spectre_torch.r10_causal import causal_query_pools, chunk_starts, chunked_causal_conv
+from spectre_torch.v1_spectre import SpectreLayer
+from spectre_torch.causal_hybrid import (
     CausalSpectreMultiHead,
     interp_complex_1d_cubic,
     swap_gpt2_attention_official_causal,
@@ -119,7 +119,7 @@ def test_r10_v1_layer_future_invariance_with_randomized_gate():
     layer = SpectreLayer(32, 4, 64, 16, causal_chunks=N_CHUNKS)
     with torch.no_grad():
         for head in layer.heads:
-            _randomize_gate(head.gate.l2)
+            _randomize_gate(head.v1_gate.l2)
     layer = layer.eval()
     x = torch.randn(2, 64, 32)
     with torch.no_grad():
@@ -171,7 +171,7 @@ def test_r10_official_near_identity_init_preserved():
     """Warm start semantics survive chunking: zeroed gate MLP -> every chunk's
     kernel is 0.9*delta -> head output 0.9 * (x @ W_v.T) at every position."""
     torch.manual_seed(6)
-    from spectre_torch.official_causal import CausalSpectreHead, make_gate_near_identity
+    from spectre_torch.causal_hybrid import CausalSpectreHead, make_gate_near_identity
 
     head = CausalSpectreHead(16, fft_size=64, d_gate=32, num_groups=4, causal_chunks=N_CHUNKS)
     make_gate_near_identity(head)
@@ -211,9 +211,9 @@ def test_r10_v1_batched_layer_equals_per_head_loop():
     layer = SpectreLayer(d_model, n_heads, n_fft, hidden, causal_chunks=N_CHUNKS)
     with torch.no_grad():
         for head in layer.heads:
-            head.gate.l2.weight.normal_(0, 0.5)
-            head.gate.l2.bias.normal_(0, 0.1)
-            head.gate.modrelu_bias.normal_(0, 0.05)
+            head.v1_gate.l2.weight.normal_(0, 0.5)
+            head.v1_gate.l2.bias.normal_(0, 0.1)
+            head.v1_gate.modrelu_bias.normal_(0, 0.05)
     x = torch.randn(3, 48, d_model)
     outs = [head(x) for head in layer.heads]
     expected = layer.wo(torch.cat(outs, dim=-1))
