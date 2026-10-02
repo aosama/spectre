@@ -16,9 +16,21 @@ The R6 diagnosis attributed the 1.62x PPL gap to the backbone never having
 been co-trained with SPECTRE; this mode tests that hypothesis directly.
 Checkpoint goes to checkpoints/best-cotraining.pt so the frozen-backbone
 best.pt is never clobbered.
+
+--r10 / --official-causal-r10: the R10 strictly causal gate (Issue #3) — one
+spectral kernel per chunk of the window, computed from the query mean of
+strictly earlier positions. Fixes the gate-descriptor future leak that made
+the R5/R9 "causal" labels partially vacuous. Checkpoints go to
+checkpoints/best-r10.pt and checkpoints/best-official-causal-r10.pt.
+
+Checkpoints: --resume picks up a mid-epoch run with no lost work. The model,
+optimizer and step counters are written to <ckpt>.latest.pt every
+--save-every-steps (default 25) steps and again on SIGINT/SIGTERM, so a stop
+costs at most one interval; the improvement-only best model stays in <ckpt>.pt.
 """
 import math
 import os
+import signal
 import sys
 import time
 
@@ -47,6 +59,8 @@ CLIP = 1.0
 TIME_BUDGET_S = 30 * 60
 PATIENCE = 2
 LOG_EVERY = 25
+SAVE_EVERY_STEPS = 25
+CAUSAL_CHUNKS_R10 = 4
 CKPT_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "checkpoints")
 
 
@@ -127,17 +141,26 @@ def main() -> None:
     cotraining = "--cotraining" in sys.argv
     official = "--official" in sys.argv
     official_causal = "--official-causal" in sys.argv
+    official_causal_r10 = "--official-causal-r10" in sys.argv
+    r10 = "--r10" in sys.argv
     budget_minutes = TIME_BUDGET_S / 60
+    save_every = SAVE_EVERY_STEPS
     for arg in sys.argv[1:]:
         if arg.startswith("--budget-minutes="):
             budget_minutes = float(arg.split("=", 1)[1])
+        elif arg.startswith("--save-every-steps="):
+            save_every = int(arg.split("=", 1)[1])
     torch.manual_seed(42)
     mem = MemLogger("train")
     model = GPT2LMHeadModel.from_pretrained("gpt2")
-    if official_causal:
+    if official_causal_r10:
+        swap_gpt2_attention_official_causal(model, causal_chunks=CAUSAL_CHUNKS_R10)
+    elif official_causal:
         swap_gpt2_attention_official_causal(model)
     elif official:
         swap_gpt2_attention_official(model)
+    elif r10:
+        swap_gpt2_attention(model, causal_chunks=CAUSAL_CHUNKS_R10)
     else:
         swap_gpt2_attention(model)
     freeze_backbone(model)
@@ -160,14 +183,26 @@ def main() -> None:
     backbone_scale = BACKBONE_LR_PEAK / LR_PEAK if cotraining else 0.0
     opt = torch.optim.AdamW(_param_groups(model, backbone_scale), lr=LR_PEAK)
     os.makedirs(CKPT_DIR, exist_ok=True)
-    arch = "official-causal" if official_causal else ("official" if official else "v1")
+    arch = (
+        "official-causal-r10" if official_causal_r10
+        else "v1-r10" if r10
+        else "official-causal" if official_causal
+        else "official" if official
+        else "v1"
+    )
     ckpt_name = (
-        "best-official-causal.pt" if official_causal
+        "best-official-causal-r10.pt" if official_causal_r10
+        else "best-r10.pt" if r10
+        else "best-official-causal.pt" if official_causal
         else "best-official.pt" if official
         else "best-cotraining.pt" if cotraining
         else "best.pt"
     )
     best_path = os.path.join(CKPT_DIR, ckpt_name)
+    # latest_path is the periodic resume checkpoint (full state every save_every
+    # steps); best_path is the improvement-only best-model checkpoint. resume
+    # always reads latest_path so a mid-epoch stop can be picked up.
+    latest_path = best_path[:-3] + ".latest.pt"
     time_budget = budget_minutes * 60
     patience = 3 if cotraining else PATIENCE
     print(f"arch: {arch} (checkpoint {ckpt_name}, budget {budget_minutes:.0f} min)")
@@ -176,20 +211,57 @@ def main() -> None:
     bad_epochs = 0
     step = 0
     start_epoch = 0
+    i_begin = 0
     if resume:
-        if not os.path.exists(best_path):
-            sys.exit(f"--resume requested but {best_path} not found")
-        ckpt = torch.load(best_path, map_location="cpu", weights_only=False)
+        resume_path = (
+            latest_path if os.path.exists(latest_path) else (best_path if os.path.exists(best_path) else None)
+        )
+        if resume_path is None:
+            sys.exit(f"--resume requested but neither {latest_path} nor {best_path} was found")
+        ckpt = torch.load(resume_path, map_location="cpu", weights_only=False)
         model.load_state_dict(ckpt["model"])
         if "optimizer" in ckpt:
             opt.load_state_dict(ckpt["optimizer"])
         else:
-            print("checkpoint has no optimizer state (pre-resume-support format); warm-starting AdamW")
+            print("resume checkpoint has no optimizer state; starting AdamW from restored step")
         best_val = ckpt["val_loss"]
         step = ckpt["step"]
-        start_epoch = ckpt["epoch"] + 1
+        start_epoch = ckpt["epoch"]
         bad_epochs = ckpt.get("bad_epochs", 0)
-        print(f"resumed from epoch {ckpt['epoch']} (step {step}, best val {best_val:.4f})")
+        i_begin = step % steps_per_epoch
+        print(f"resumed from {resume_path}: epoch {start_epoch} step {step} (i={i_begin}) best val {best_val:.4f}")
+
+    def _save_latest(when: str) -> None:
+        """Write the full-state resume checkpoint (model + optimizer + counters).
+
+        LR is recomputed from step by _lr_at, so no scheduler state is needed.
+        Written periodically and on interrupt so a stop costs at most one
+        interval of work.
+        """
+        try:
+            torch.save(
+                {
+                    "model": model.state_dict(),
+                    "optimizer": opt.state_dict(),
+                    "val_loss": best_val,
+                    "step": step,
+                    "epoch": epoch,
+                    "bad_epochs": bad_epochs,
+                    "arch": arch,
+                },
+                latest_path,
+            )
+        except Exception as exc:
+            print(f"[warn] failed to write resume checkpoint: {exc}")
+
+    def _handle_stop(signum: int, frame: object) -> None:
+        print(f"\n[signal {signum}] saving resume checkpoint and stopping...")
+        _save_latest(f"interrupted by signal {signum}")
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, _handle_stop)
+    signal.signal(signal.SIGTERM, _handle_stop)
+
     tokens_seen = 0
     start = time.time()
     stopped = "completed"
@@ -225,7 +297,8 @@ def main() -> None:
     for epoch in range(start_epoch, MAX_EPOCHS):
         perm = torch.randperm(train_blocks.shape[0], generator=torch.Generator().manual_seed(42 + epoch))
         budget_hit = False
-        for i in range(steps_per_epoch):
+        i_start = i_begin if (epoch == start_epoch and resume) else 0
+        for i in range(i_start, steps_per_epoch):
             if time.time() - start > time_budget:
                 stopped = f"time budget hit at step {step}"
                 budget_hit = True
@@ -250,6 +323,8 @@ def main() -> None:
             torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], CLIP)
             opt.step()
             step += 1
+            if step % save_every == 0:
+                _save_latest(f"periodic step {step}")
             if step % LOG_EVERY == 0:
                 elapsed = time.time() - start
                 print(f"step {step} epoch {epoch} loss {batch_loss:.4f} lr {lr:.2e} tok/s {tokens_seen/elapsed:.0f}")

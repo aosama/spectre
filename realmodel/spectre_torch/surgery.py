@@ -44,11 +44,16 @@ def _slice_head(conv_weight: torch.Tensor, conv_bias: torch.Tensor, h: int, offs
     return wq, bq
 
 
-def swap_gpt2_attention(model) -> "GPT2LMHeadModel":
-    """Replace each block's GPT2Attention with a warm-initialized SpectreAttention."""
+def swap_gpt2_attention(model, causal_chunks: int = 0) -> "GPT2LMHeadModel":
+    """Replace each block's GPT2Attention with a warm-initialized SpectreAttention.
+
+    causal_chunks >= 2 (R10, Issue #3) makes the gate strictly causal: one
+    kernel per chunk from strictly earlier queries instead of the whole-window
+    query mean.
+    """
     for block in model.transformer.h:
         attn = block.attn
-        layer = SpectreLayer(D_MODEL, N_HEADS, N_FFT, GATE_HIDDEN)
+        layer = SpectreLayer(D_MODEL, N_HEADS, N_FFT, GATE_HIDDEN, causal_chunks=causal_chunks)
         with torch.no_grad():
             for h, head in enumerate(layer.heads):
                 wq, bq = _slice_head(attn.c_attn.weight, attn.c_attn.bias, h, 0)
