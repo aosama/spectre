@@ -16,6 +16,7 @@ import torch.nn as nn
 
 from .r10_causal import causal_query_pools, chunked_causal_conv
 from .v1_gate import SpectreGate, gelu_tanh
+from .r11_chunk0_init import initialize_gate_from_empty_prefix
 
 
 def causal_conv_fft(v: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
@@ -49,10 +50,20 @@ class SpectreHead(nn.Module):
     4. out = chunked_causal_conv(V, h)            (strictly causal, O(n log n))
     """
 
-    def __init__(self, d_model: int, d_head: int, n_fft: int, hidden: int, causal_chunks: int = 0):
+    def __init__(
+        self,
+        d_model: int,
+        d_head: int,
+        n_fft: int,
+        hidden: int,
+        causal_chunks: int = 0,
+        chunk0_init: bool = False,
+    ):
         super().__init__()
         if causal_chunks < 0 or causal_chunks == 1:
             raise ValueError("causal_chunks must be 0 (legacy) or >= 2")
+        if chunk0_init and causal_chunks < 2:
+            raise ValueError("chunk0_init requires causal_chunks >= 2")
         self.d_model = d_model
         self.d_head = d_head
         self.n_fft = n_fft
@@ -62,6 +73,8 @@ class SpectreHead(nn.Module):
         self.wv = nn.Parameter(torch.empty(d_model, d_head))
         self.bv = nn.Parameter(torch.zeros(d_head))
         self.v1_gate = SpectreGate(d_head, n_fft, hidden)
+        if chunk0_init:
+            initialize_gate_from_empty_prefix(self.v1_gate)
         # Xavier/Glorot-uniform, matching Rust nn::Linear::new.
         a = (6.0 / (d_model + d_head)) ** 0.5
         nn.init.uniform_(self.wq, -a, a)
@@ -98,9 +111,19 @@ class SpectreLayer(nn.Module):
     Parameters and per-head modules are unchanged.
     """
 
-    def __init__(self, d_model: int, n_heads: int, n_fft: int, hidden: int, causal_chunks: int = 0):
+    def __init__(
+        self,
+        d_model: int,
+        n_heads: int,
+        n_fft: int,
+        hidden: int,
+        causal_chunks: int = 0,
+        chunk0_init: bool = False,
+    ):
         super().__init__()
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        if chunk0_init and causal_chunks < 2:
+            raise ValueError("chunk0_init requires causal_chunks >= 2")
         self.d_model = d_model
         self.n_heads = n_heads
         self.n_fft = n_fft
@@ -108,7 +131,17 @@ class SpectreLayer(nn.Module):
         d_head = d_model // n_heads
         self.d_head = d_head
         self.heads = nn.ModuleList(
-            [SpectreHead(d_model, d_head, n_fft, hidden, causal_chunks=causal_chunks) for _ in range(n_heads)]
+            [
+                SpectreHead(
+                    d_model,
+                    d_head,
+                    n_fft,
+                    hidden,
+                    causal_chunks=causal_chunks,
+                    chunk0_init=chunk0_init,
+                )
+                for _ in range(n_heads)
+            ]
         )
         self.wo = nn.Linear(d_model, d_model)
 

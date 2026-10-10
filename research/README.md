@@ -12,6 +12,7 @@ Everything experimental lives here, one module per increment, R-numbered. The pa
 | R8 | *(no research module — uses `spectre_paper.official`)* | Control run of the paper's own math | Collapses to a next-token copier (position-0 loss 0.0028) — proves the paper's headline is future-token leakage |
 | R9 | `causal_hybrid.py` | The author's gate (kept verbatim by subclassing) + strictly causal zero-padded mixing; near-identity warm start | Test PPL 57.94 (1.911×) — leak-free, but the official per-head geometry transplants poorly |
 | R10 | `r10_causal.py` | Strictly-causal per-chunk gate (`causal_chunks` knob): chunk *c*'s kernel pools queries from strictly earlier positions only; `0` reproduces R5/R9 exactly | Closes the gate-descriptor future leak (Issue #3) that vacuous constant-gate tests missed |
+| R11 | `r11_chunk0_init.py` (wired through `v1_spectre.py` and `transplant.py`) | Initialize every R10 chunk from the per-head gate output for the empty-prefix descriptor (chunk 0); the gate remains trainable | Implemented; training result not measured yet. Run `uv run python -m spectre_research.train --r11` |
 
 Shared drivers (not increments themselves): `train.py` (fine-tuning, all variants), `report.py` (evaluation + `docs/realmodel-report.md`), `leakage.py` (the causality probe — position-0 loss is the decisive number).
 

@@ -4,9 +4,15 @@ mirror of the verified Rust PoC (circular variant) with the D3 adaptation.
 Run: uv run pytest -q  (from the repo root)
 """
 import numpy as np
+import pytest
 import torch
 
 from spectre_research.v1_spectre import SpectreHead, SpectreLayer, causal_conv_fft
+
+
+def test_chunk0_init_requires_r10_chunks():
+    with pytest.raises(ValueError, match="chunk0_init requires causal_chunks >= 2"):
+        SpectreLayer(32, 4, 64, 16, chunk0_init=True)
 
 
 def test_rfft_roundtrip():
@@ -14,6 +20,34 @@ def test_rfft_roundtrip():
         x = torch.randn(n)
         y = torch.fft.irfft(torch.fft.rfft(x, n=n), n=n)
         assert (y - x).abs().max() < 1e-5, f"rfft roundtrip failed for n={n}"
+
+
+def test_chunk0_init_keeps_r10_layer_future_invariant():
+    torch.manual_seed(12)
+    d_model, n_heads, n_fft, hidden, causal_chunks = 32, 4, 64, 16, 4
+    layer = SpectreLayer(
+        d_model,
+        n_heads,
+        n_fft,
+        hidden,
+        causal_chunks=causal_chunks,
+        chunk0_init=True,
+    )
+    with torch.no_grad():
+        for head in layer.heads:
+            head.v1_gate.l2.weight.normal_(0.0, 0.5)
+            head.v1_gate.l2.bias.normal_(0.0, 0.1)
+
+    sequence = torch.randn(2, n_fft, d_model)
+    changed_future = sequence.clone()
+    changed_future[:, 40:, :] = torch.randn_like(changed_future[:, 40:, :])
+
+    with torch.no_grad():
+        original_output = layer(sequence)
+        changed_output = layer(changed_future)
+
+    max_past_delta = (original_output[:, :40] - changed_output[:, :40]).abs().max()
+    assert max_past_delta < 1e-5
 
 
 def test_all_pass_gate_is_identity():

@@ -38,6 +38,7 @@ _CKPT_DIR = Path(__file__).resolve().parents[2] / "checkpoints"
 CKPT_OFFICIAL = _CKPT_DIR / "best-official.pt"
 CKPT_V1 = _CKPT_DIR / "best.pt"
 CKPT_R10 = _CKPT_DIR / "best-r10.pt"
+CKPT_R11 = _CKPT_DIR / "best-r11.pt"
 CKPT_OFFICIAL_CAUSAL_R10 = _CKPT_DIR / "best-official-causal-r10.pt"
 CKPT_OFFICIAL_CAUSAL = _CKPT_DIR / "best-official-causal.pt"
 R10_CAUSAL_CHUNKS = 4
@@ -136,6 +137,18 @@ def main() -> None:
             f"v1 gate + strictly causal gate, C={R10_CAUSAL_CHUNKS} (R10 ckpt)",
             lambda m: swap_gpt2_attention(m, causal_chunks=R10_CAUSAL_CHUNKS),
             CKPT_R10,
+            test_blocks,
+            shuffled,
+        )
+    if CKPT_R11.exists():
+        _run(
+            f"v1 gate + chunk-0-derived initialization, C={R10_CAUSAL_CHUNKS} (R11 ckpt)",
+            lambda m: swap_gpt2_attention(
+                m,
+                causal_chunks=R10_CAUSAL_CHUNKS,
+                chunk0_init=True,
+            ),
+            CKPT_R11,
             test_blocks,
             shuffled,
         )

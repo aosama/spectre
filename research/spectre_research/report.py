@@ -31,6 +31,7 @@ CKPT_COTRAIN = os.path.join(_CKPT_DIR, "best-cotraining.pt")
 CKPT_OFFICIAL = os.path.join(_CKPT_DIR, "best-official.pt")
 CKPT_OFFICIAL_CAUSAL = os.path.join(_CKPT_DIR, "best-official-causal.pt")
 CKPT_R10 = os.path.join(_CKPT_DIR, "best-r10.pt")
+CKPT_R11 = os.path.join(_CKPT_DIR, "best-r11.pt")
 CKPT_OFFICIAL_CAUSAL_R10 = os.path.join(_CKPT_DIR, "best-official-causal-r10.pt")
 CKPT_R10_CAUSAL_CHUNKS = 4
 REPORT_PATH = os.path.join(REPO_ROOT, "docs", "realmodel-report.md")
@@ -132,6 +133,12 @@ def _eval_checkpoint(path: str, diag_inputs: torch.Tensor) -> tuple[float, dict,
         swap_gpt2_attention_official_causal(model, causal_chunks=CKPT_R10_CAUSAL_CHUNKS)
     elif arch == "v1-r10":
         swap_gpt2_attention(model, causal_chunks=CKPT_R10_CAUSAL_CHUNKS)
+    elif arch == "v1-r11":
+        swap_gpt2_attention(
+            model,
+            causal_chunks=CKPT_R10_CAUSAL_CHUNKS,
+            chunk0_init=True,
+        )
     else:
         swap_gpt2_attention(model)
     model.load_state_dict(ckpt["model"])
@@ -140,7 +147,7 @@ def _eval_checkpoint(path: str, diag_inputs: torch.Tensor) -> tuple[float, dict,
     if arch in ("official", "official-causal", "official-causal-r10"):
         stats: dict = {}  # v1 gate diagnostics don't apply to the grouped official gate
     else:
-        diag_chunks = CKPT_R10_CAUSAL_CHUNKS if arch == "v1-r10" else 1
+        diag_chunks = CKPT_R10_CAUSAL_CHUNKS if arch in ("v1-r10", "v1-r11") else 1
         stats = _gate_magnitude_stats(model, diag_inputs, diag_chunks)
         stats["pairwise_cos_dist"] = _gate_pairwise_distance(model, diag_inputs, diag_chunks)
     del model
@@ -173,6 +180,11 @@ def main() -> None:
     if os.path.exists(CKPT_R10):
         r10_ppl, r10_ckpt, r10_stats = _eval_checkpoint(CKPT_R10, diag_inputs)
     r10_ratio = r10_ppl / BASELINE_PPL if r10_ppl else None
+
+    r11_ppl, r11_ckpt, r11_stats = None, {}, {}
+    if os.path.exists(CKPT_R11):
+        r11_ppl, r11_ckpt, r11_stats = _eval_checkpoint(CKPT_R11, diag_inputs)
+    r11_ratio = r11_ppl / BASELINE_PPL if r11_ppl else None
 
     official_causal_r10_ppl, official_causal_r10_ckpt, official_causal_r10_stats = None, {}, {}
     if os.path.exists(CKPT_OFFICIAL_CAUSAL_R10):
@@ -208,10 +220,33 @@ def main() -> None:
         ppl_rows.append(
             "| SPECTRE, v1 gate + strictly causal gate (R10) | {:.4f} | {:.3f} |".format(r10_ppl, r10_ratio)
         )
+    if r11_ppl:
+        ppl_rows.append(
+            "| SPECTRE, v1 gate + chunk-0-derived initialization (R11) | {:.4f} | {:.3f} |".format(
+                r11_ppl, r11_ratio
+            )
+        )
     if official_causal_r10_ppl:
         ppl_rows.append(
             "| SPECTRE, official gate + strictly causal gate (R10) | {:.4f} | {:.3f} |".format(
                 official_causal_r10_ppl, official_causal_r10_ratio
+            )
+        )
+
+    r11_summary = ""
+    if r11_ckpt:
+        r11_summary = (
+            "\n## Chunk-0-derived gate initialization summary (R11)\n"
+            "\n"
+            "| item | value |\n"
+            "| --- | --- |\n"
+            "| best val loss | {:.4f} |\n"
+            "| best epoch | {} |\n"
+            "| arch | v1 gate with one spectral kernel per {}-token causal chunk; all chunks "
+            "start from the gate produced by the empty-prefix descriptor and remain trainable |\n".format(
+                r11_ckpt.get("val_loss", float("nan")),
+                r11_ckpt.get("epoch", "?"),
+                1024 // CKPT_R10_CAUSAL_CHUNKS,
             )
         )
 
@@ -352,6 +387,7 @@ def main() -> None:
         official_summary,
         official_causal_summary,
         r10_summary,
+        r11_summary,
         official_causal_r10_summary,
         "## Gate adaptivity diagnostics (10 diverse inputs)",
         "",
@@ -375,6 +411,11 @@ def main() -> None:
         print(f"SPECTRE (official gate + causal mixing, R9) ppl: {official_causal_ppl:.4f} (ratio {official_causal_ratio:.3f})")
     if r10_ppl:
         print(f"SPECTRE (v1 gate + strictly causal gate, R10) ppl: {r10_ppl:.4f} (ratio {r10_ratio:.3f})")
+    if r11_ppl:
+        print(
+            f"SPECTRE (v1 gate + chunk-0-derived initialization, R11) ppl: "
+            f"{r11_ppl:.4f} (ratio {r11_ratio:.3f})"
+        )
     if official_causal_r10_ppl:
         print(
             f"SPECTRE (official gate + strictly causal gate, R10) ppl: {official_causal_r10_ppl:.4f} "

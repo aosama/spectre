@@ -3,6 +3,7 @@
   * v1_gate.py / v1_spectre.py — R5: our causal reimplementation of the paper's layer.
   * causal_hybrid.py — R9: the author's gate + strictly causal mixing (leak-free).
   * r10_causal.py — R10: strictly-causal per-chunk gate machinery (Issue #3).
+  * r11_chunk0_init.py — R11: chunk-0-derived gate initialization for R10.
   * transplant.py — GPT-2 surgery warm-init for the v1 layer.
   * train.py / report.py / leakage.py — experiment drivers over all variants.
 

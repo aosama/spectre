@@ -42,16 +42,28 @@ class SpectreAttention(nn.Module):
         return (out, None)
 
 
-def swap_gpt2_attention(model, causal_chunks: int = 0) -> "GPT2LMHeadModel":
+def swap_gpt2_attention(
+    model,
+    causal_chunks: int = 0,
+    chunk0_init: bool = False,
+) -> "GPT2LMHeadModel":
     """Replace each block's GPT2Attention with a warm-initialized SpectreAttention.
 
     causal_chunks >= 2 (R10, Issue #3) makes the gate strictly causal: one
     kernel per chunk from strictly earlier queries instead of the whole-window
-    query mean.
+    query mean. chunk0_init (R11) copies the empty-prefix gate output to all
+    chunks at initialization while leaving the gate trainable.
     """
     for block in model.transformer.h:
         attn = block.attn
-        layer = SpectreLayer(D_MODEL, N_HEADS, N_FFT, GATE_HIDDEN, causal_chunks=causal_chunks)
+        layer = SpectreLayer(
+            D_MODEL,
+            N_HEADS,
+            N_FFT,
+            GATE_HIDDEN,
+            causal_chunks=causal_chunks,
+            chunk0_init=chunk0_init,
+        )
         with torch.no_grad():
             for h, head in enumerate(layer.heads):
                 wq, bq = slice_head_projection(attn.c_attn.weight, attn.c_attn.bias, h, 0)

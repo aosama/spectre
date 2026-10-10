@@ -23,6 +23,10 @@ strictly earlier positions. Fixes the gate-descriptor future leak that made
 the R5/R9 "causal" labels partially vacuous. Checkpoints go to
 checkpoints/best-r10.pt and checkpoints/best-official-causal-r10.pt.
 
+--r11: the v1 R10 gate with chunk-0-derived initialization — every chunk starts
+from the gate produced by the empty-prefix descriptor, rather than later chunks
+starting from unrelated random gate outputs. Checkpoint: checkpoints/best-r11.pt.
+
 Checkpoints: --resume picks up a mid-epoch run with no lost work. The model,
 optimizer and step counters are written to <ckpt>.latest.pt every
 --save-every-steps (default 25) steps and again on SIGINT/SIGTERM, so a stop
@@ -145,6 +149,7 @@ def main() -> None:
     official = "--official" in sys.argv
     official_causal = "--official-causal" in sys.argv
     official_causal_r10 = "--official-causal-r10" in sys.argv
+    r11 = "--r11" in sys.argv
     r10 = "--r10" in sys.argv
     budget_minutes = TIME_BUDGET_S / 60
     save_every = SAVE_EVERY_STEPS
@@ -162,6 +167,12 @@ def main() -> None:
         swap_gpt2_attention_official_causal(model)
     elif official:
         swap_gpt2_attention_official(model)
+    elif r11:
+        swap_gpt2_attention(
+            model,
+            causal_chunks=CAUSAL_CHUNKS_R10,
+            chunk0_init=True,
+        )
     elif r10:
         swap_gpt2_attention(model, causal_chunks=CAUSAL_CHUNKS_R10)
     else:
@@ -188,6 +199,7 @@ def main() -> None:
     os.makedirs(CKPT_DIR, exist_ok=True)
     arch = (
         "official-causal-r10" if official_causal_r10
+        else "v1-r11" if r11
         else "v1-r10" if r10
         else "official-causal" if official_causal
         else "official" if official
@@ -195,6 +207,7 @@ def main() -> None:
     )
     ckpt_name = (
         "best-official-causal-r10.pt" if official_causal_r10
+        else "best-r11.pt" if r11
         else "best-r10.pt" if r10
         else "best-official-causal.pt" if official_causal
         else "best-official.pt" if official

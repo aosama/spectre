@@ -50,7 +50,7 @@ uv run python -m spectre_research.report              # writes docs/realmodel-re
 uv run python -m spectre_research.leakage             # causality probe (position-0 loss is decisive)
 ```
 
-Training variants: `--official` (the paper's own math), `--official-causal` (R9), `--r10` / `--official-causal-r10` (R10 gate), `--cotraining` (unfreeze backbone), `--resume` (continue an interrupted run).
+Training variants: `--official` (the paper's own math), `--official-causal` (R9), `--r10` / `--official-causal-r10` (R10 gate), `--r11` (R10 v1 gate initialized from its chunk-0 cold-start gate; no R11 training result yet), `--cotraining` (unfreeze backbone), `--resume` (continue an interrupted run).
 
 ### Resumable training
 
@@ -81,6 +81,7 @@ The paper's own math (R8 experiment: the vendored implementation, trained honest
 
 - **R9 causal hybrid** (`research/spectre_research/causal_hybrid.py`): author gate + zero-padded linear convolution — provably leak-free, test PPL 57.94 (1.911×).
 - **R10 gate** (`research/spectre_research/r10_causal.py`): strictly-causal per-chunk gate — `causal_chunks=0` reproduces R5/R9 exactly; `≥2` (default 4) closes the gate-descriptor future leak that earlier "causal" labels missed (Issue #3).
+- **R11 initialization** (`research/spectre_research/r11_chunk0_init.py`): initializes every R10 chunk from its head's empty-prefix (chunk-0) gate output; gates remain trainable. Run with `--r11`; no training result is measured yet.
 
 Causality is measured directly by the probe in `research/spectre_research/leakage.py`; a naive shuffle-the-future test cannot catch one-step copying — use the position-0 loss.
 

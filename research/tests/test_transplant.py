@@ -3,11 +3,12 @@
 Run: uv run pytest -q  (from the repo root)
 """
 import hashlib
+from types import SimpleNamespace
 
 import torch
 from transformers import GPT2LMHeadModel
 
-from spectre_paper.surgery import D_HEAD, N_HEADS, freeze_backbone, param_report
+from spectre_paper.surgery import D_HEAD, D_MODEL, N_HEADS, freeze_backbone, param_report
 from spectre_research.transplant import swap_gpt2_attention
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -15,6 +16,32 @@ DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
 # (513 params x 12 heads x 12 layers = 73,872). Correct count:
 # per layer = 12 heads x (98,432 qv + 71,491 gate) + 590,592 wo = 2,629,668.
 EXPECTED_TRAINABLE = 31_556_016
+
+
+def test_r11_transplant_initializes_every_chunk_from_empty_prefix():
+    projection = SimpleNamespace(
+        weight=torch.zeros(D_MODEL, 3 * D_MODEL),
+        bias=torch.zeros(3 * D_MODEL),
+    )
+    output_projection = SimpleNamespace(
+        weight=torch.zeros(D_MODEL, D_MODEL),
+        bias=torch.zeros(D_MODEL),
+    )
+    attention = SimpleNamespace(c_attn=projection, c_proj=output_projection)
+    block = SimpleNamespace(attn=attention)
+    model = SimpleNamespace(transformer=SimpleNamespace(h=[block]))
+
+    swap_gpt2_attention(model, causal_chunks=4, chunk0_init=True)
+
+    layer = model.transformer.h[0].attn.spectre
+    assert layer.causal_chunks == 4
+    empty_prefix = torch.zeros(1, D_HEAD)
+    later_descriptors = torch.randn(3, D_HEAD)
+    for head in layer.heads:
+        with torch.no_grad():
+            chunk_zero_gate = head.v1_gate(empty_prefix)
+            later_gates = head.v1_gate(later_descriptors)
+        assert torch.allclose(later_gates, chunk_zero_gate.expand_as(later_gates), atol=1e-6)
 
 
 def _hash(t: torch.Tensor) -> str:
