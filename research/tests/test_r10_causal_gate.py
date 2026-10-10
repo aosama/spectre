@@ -22,7 +22,7 @@ import torch
 from transformers import GPT2LMHeadModel
 
 from spectre_research.r10_causal import causal_query_pools, chunk_starts, chunked_causal_conv
-from spectre_research.v1_spectre import SpectreLayer
+from spectre_research.v1_spectre import SpectreHead, SpectreLayer
 from spectre_research.causal_hybrid import (
     CausalSpectreMultiHead,
     interp_complex_1d_cubic,
@@ -165,6 +165,44 @@ def test_r10_no_gradient_from_future_queries():
     )
     past_grad = q.grad[:, :start_c, :].abs().max().item()
     assert past_grad > 0.0, "kernel received no gradient from its own causal pool"
+
+
+def test_r10_v1_no_gradient_from_future_queries():
+    """Issue #3 criterion for the v1 layer: its per-chunk kernel cannot carry a
+    gradient from the chunk's own-or-future queries, so the kernel is a pure
+    function of strictly earlier positions only.
+
+    Mirrors the official-layer gradient test but over the v1 gate path
+    (LayerNorm -> Linear -> GELU(tanh) -> Linear -> modReLU -> iRFFT). The gate is forced
+    non-constant, which is how the pre-R10 v1 tests were vacuous (the kernel
+    was pooled over the whole window and moved whenever any future token moved).
+    """
+    torch.manual_seed(51)
+    head = SpectreHead(32, 8, 64, 16, causal_chunks=N_CHUNKS)
+    with torch.no_grad():
+        _randomize_gate(head.v1_gate.l2)
+        head.v1_gate.modrelu_bias.normal_(0.0, 0.05)
+    n, C = 64, N_CHUNKS
+    q = torch.randn(1, n, head.d_head, requires_grad=True)  # per-head projected queries
+    starts = chunk_starts(n, C)
+    chunk_index = 2
+    start_c = starts[chunk_index]
+
+    # Build one length-N kernel per chunk from its own causal pool; the only
+    # route by which a query can influence a kernel is through this gate.
+    pools = causal_query_pools(q, C)
+    kernels = torch.fft.irfft(
+        torch.stack([head.v1_gate(pools[:, c]) for c in range(C)], dim=0),
+        n=head.n_fft, dim=-1,
+    )
+    kernels[chunk_index].abs().sum().backward()
+
+    self_and_future_grad = q.grad[:, start_c:, :].abs().max().item()
+    assert self_and_future_grad == 0.0, (
+        f"v1 chunk-{chunk_index} kernel gradient reaches queries at/after its start: {self_and_future_grad}"
+    )
+    past_grad = q.grad[:, :start_c, :].abs().max().item()
+    assert past_grad > 0.0, "v1 kernel received no gradient from its causal pool"
 
 
 def test_r10_official_near_identity_init_preserved():
