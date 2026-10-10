@@ -1,0 +1,25 @@
+Loading weights:   0%|          | 0/148 [00:00<?, ?it/s]Loading weights: 100%|██████████| 148/148 [00:00<00:00, 13817.32it/s]
+[transformers] Token indices sequence length is longer than the specified maximum sequence length for this model (2403644 > 1024). Running this sequence through the model will result in indexing errors
+[transformers] Token indices sequence length is longer than the specified maximum sequence length for this model (248461 > 1024). Running this sequence through the model will result in indexing errors
+Traceback (most recent call last):
+  File "<frozen runpy>", line 203, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "/Users/ahmedhamdy/IdeaProjects/spectre/realmodel/spectre_torch/train.py", line 345, in <module>
+    main()
+    ~~~~^^
+  File "/Users/ahmedhamdy/IdeaProjects/spectre/realmodel/spectre_torch/train.py", line 224, in main
+    opt.load_state_dict(ckpt["optimizer"])
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^
+  File "/Users/ahmedhamdy/IdeaProjects/spectre/realmodel/.venv/lib/python3.13/site-packages/torch/_compile.py", line 54, in inner
+    return disable_fn(*args, **kwargs)
+  File "/Users/ahmedhamdy/IdeaProjects/spectre/realmodel/.venv/lib/python3.13/site-packages/torch/_dynamo/eval_frame.py", line 1548, in _fn
+    return fn(*args, **kwargs)
+  File "/Users/ahmedhamdy/IdeaProjects/spectre/realmodel/.venv/lib/python3.13/site-packages/torch/optim/optimizer.py", line 961, in load_state_dict
+    raise ValueError(
+        "loaded state dict has a different number of parameter groups"
+    )
+ValueError: loaded state dict has a different number of parameter groups
+[mem:train] after model load: rss 0.52GB, mps alloc 0.48GB / driver 1.05GB, swap used 1.86GB
+train blocks: 2347, val blocks: 242, steps/epoch: 73 (micro 8 x 4)
+[mem:train] after data load: rss 2.00GB, mps alloc 0.48GB / driver 1.05GB, swap used 1.86GB
+arch: official-causal-r10 (checkpoint best-official-causal-r10.pt, budget 40 min)

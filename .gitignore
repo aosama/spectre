@@ -1,7 +1,5 @@
-target/
-realmodel/.venv/
-realmodel/checkpoints/
+.venv/
 __pycache__/
-realmodel/xval-dump/out.json
-realmodel/xval-dump/target/
+.pytest_cache/
 .DS_Store
+checkpoints/

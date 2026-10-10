@@ -1,0 +1,23 @@
+[project]
+name = "spectre"
+version = "0.1.0"
+description = "SPECTRE reproduction (the paper's math) and incremental research (GPT-2 small, PyTorch, MPS)"
+requires-python = ">=3.12"
+dependencies = [
+    "torch",
+    "transformers",
+    "datasets",
+    "numpy",
+    "pytest",
+    "torch-dct>=0.1.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["reproduction/spectre_paper", "research/spectre_research"]
+
+[tool.pytest.ini_options]
+pythonpath = ["reproduction", "research"]

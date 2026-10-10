@@ -1,0 +1,28 @@
+Loading weights:   0%|          | 0/148 [00:00<?, ?it/s]Loading weights: 100%|██████████| 148/148 [00:00<00:00, 25308.10it/s]
+[transformers] Token indices sequence length is longer than the specified maximum sequence length for this model (2403644 > 1024). Running this sequence through the model will result in indexing errors
+[transformers] Token indices sequence length is longer than the specified maximum sequence length for this model (248461 > 1024). Running this sequence through the model will result in indexing errors
+[mem:train] after model load: rss 0.52GB, mps alloc 0.48GB / driver 1.05GB, swap used 1.86GB
+train blocks: 2347, val blocks: 242, steps/epoch: 73 (micro 8 x 4)
+[mem:train] after data load: rss 2.12GB, mps alloc 0.48GB / driver 1.05GB, swap used 1.86GB
+arch: official-causal-r10 (checkpoint best-official-causal-r10.pt, budget 40 min)
+[heartbeat]   0.0% step 0/730 epoch 0 loss 1.8804 elapsed 6s ETA 74m27s
+[heartbeat]   0.0% step 0/730 epoch 0 loss 7.5853 elapsed 11s ETA 139m47s
+[heartbeat]   0.1% step 1/730 epoch 0 loss 5.7688 elapsed 17s ETA 207m54s
+[heartbeat]   0.3% step 2/730 epoch 0 loss 3.7813 elapsed 22s ETA 137m30s
+[heartbeat]   0.4% step 3/730 epoch 0 loss 1.9039 elapsed 28s ETA 113m50s
+[heartbeat]   0.4% step 3/730 epoch 0 loss 7.5910 elapsed 33s ETA 135m48s
+[mem:train] step 3: rss 0.72GB, mps alloc 2.23GB / driver 22.18GB, swap used 12.52GB
+[heartbeat]   0.5% step 4/730 epoch 0 loss 5.7392 elapsed 39s ETA 118m38s
+[heartbeat]   0.7% step 5/730 epoch 0 loss 3.8030 elapsed 44s ETA 108m10s
+[heartbeat]   0.8% step 6/730 epoch 0 loss 1.9069 elapsed 50s ETA 101m09s
+[heartbeat]   0.8% step 6/730 epoch 0 loss 7.5684 elapsed 55s ETA 112m03s
+[heartbeat]   1.0% step 7/730 epoch 0 loss 5.6532 elapsed 61s ETA 105m30s
+[heartbeat]   1.1% step 8/730 epoch 0 loss 3.8031 elapsed 66s ETA 100m30s
+[mem:train] step 8: rss 0.70GB, mps alloc 2.23GB / driver 22.18GB, swap used 12.50GB
+[heartbeat]   1.2% step 9/730 epoch 0 loss 1.8937 elapsed 72s ETA 96m42s
+[heartbeat]   1.2% step 9/730 epoch 0 loss 7.4404 elapsed 77s ETA 103m50s
+[heartbeat]   1.4% step 10/730 epoch 0 loss 5.5928 elapsed 83s ETA 99m56s
+[heartbeat]   1.5% step 11/730 epoch 0 loss 3.6748 elapsed 88s ETA 96m40s
+[heartbeat]   1.6% step 12/730 epoch 0 loss 1.8691 elapsed 94s ETA 93m58s
+/Users/ahmedhamdy/.local/share/uv/python/cpython-3.13.14-macos-aarch64-none/lib/python3.13/multiprocessing/resource_tracker.py:479: UserWarning: resource_tracker: There appear to be 1 leaked semaphore objects to clean up at shutdown: {'/mp-0zwee74w'}
+  warnings.warn(

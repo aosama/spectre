@@ -1,81 +1,66 @@
-# SPECTRE Reproduction & Real-Model Validation
+# SPECTRE Reproduction & Incremental Research
 
-An independent reproduction of **SPECTRE** — "An FFT-Based Efficient Drop-In Replacement to Self-Attention for Long Contexts" ([arXiv:2502.18394](https://arxiv.org/abs/2502.18394)) — carried one step beyond the paper: the mechanism is transplanted into a real pretrained language model (GPT-2 small) to measure what it actually costs on real text. Along the way we fixed the paper's causal-mixing flaw and added a strictly-causal gate, so we also carry our own experiments here.
+An independent reproduction of **SPECTRE** — "An FFT-Based Efficient Drop-In Replacement to Self-Attention for Long Contexts" ([arXiv:2502.18394](https://arxiv.org/abs/2502.18394)) — carried one step beyond the paper: the mechanism is transplanted into a real pretrained language model (GPT-2 small) to measure what it actually costs on real text. On top of the reproduction we run our own incremental research: fixing the paper's causal-mixing flaw, adding a strictly-causal gate, and iterating toward honest attention-parity at O(n log n).
 
 ## Where everything is
 
-Open the repo and you see four folders that are **not ours** (the paper's math) and one that **is** (our experiments). This split is intentional — a first-timer should never have to guess whose code a file is.
+The repo is organized by **intent** — you should never have to guess which folder has what:
 
 ```
 spectre/
-├── oracle/            # the PAPER'S OWN MATH — the Rust reference impl we must match  (NOT ours)
-├── paper/             # the source paper, arXiv:2502.18394v7                            (NOT ours)
-├── vendored/          # the paper author's own PyTorch `spectre.py`, hash-pinned         (NOT ours)
-├── realmodel/         # OUR experiments — GPT-2 transplant + the R9/R10 fixes            (OURS)
-├── other_white_papers/# research context: Caracal / CAT lineage                          (NOT ours)
-├── docs/              # plans, validation report, deviations log, claims audit           (records)
+├── paper/             # the source whitepaper, arXiv:2502.18394v7              (INPUT — not ours)
+├── reproduction/      # EARNEST REPRODUCTION of the paper — nothing added, nothing removed
+│   ├── vendored/      #   the author's own PyTorch spectre.py, SHA-256-pinned   (not ours)
+│   ├── spectre_paper/ #   thin loader over the vendored math + neutral GPT-2 infra
+│   └── tests/         #   faithfulness tests (SHA pin, tamper refusal, official behavior)
+├── research/          # OUR INCREMENTS — one module per experiment, R-numbered  (ours)
+│   ├── spectre_research/  # v1 (R5), causal_hybrid (R9), r10_causal (R10) + drivers
+│   └── tests/
+├── related-work/      # research context: Caracal / CAT lineage                 (not ours)
+├── runs/              # training logs (small, tracked evidence)
+├── checkpoints/       # trained checkpoints (gitignored)
+├── docs/              # plans, validation reports, deviations log (historical records)
 ├── AGENTS.md          # project north star
 └── README.md          # this file
 ```
 
-## What is in this repo
+The one dependency rule: **research may import `spectre_paper`; the reproduction never imports research.** The paper's math stays pristine; every experiment lives in `research/`.
 
-The repo carries four different "SPECTREs". We keep them visually distinct — folder names, the vendored SHA-256 pin, and role-based module names tell you exactly which one you're looking at.
+## The two sides
 
-| Layer | What it is | Who wrote it | Where |
-| --- | --- | --- | --- |
-| Oracle crate (`oracle/`) | Faithful `f64` reproduction of every paper equation, oracle-tested with exact deterministic op counts. The canonical reference; every PyTorch number here must match it | Not ours (the paper's math) | `oracle/` (moved from root `src/`) |
-| Paper PDF | The source paper (v7) | Not ours | `paper/spectre-paper-2502.18394v7.pdf` |
-| Vendored author code (`spectre.py`) | The paper author's own `f64` PyTorch implementation, hash-pinned to a SHA-256 | Not ours | `vendored/` |
-| PyTorch package (`realmodel/spectre_torch/`) | GPT-2 small with attention surgically replaced by SPECTRE layers | **Ours** | `realmodel/spectre_torch/` |
-| Execution plans & reports | The plans, the validation report, the deviations log, the claims audit | Not ours | `docs/` |
-| Research context (`from-grok.md`) | Caracal / CAT lineage — we independently reinvented the fix | Not ours | `other_white_papers/` |
-
-The oracle at `oracle/` is the *oracle*: every PyTorch change in `realmodel/spectre_torch/` must stay numerically faithful to it. (The old `reference/spec-code/` mirror was byte-identical to the oracle and has been removed — there is now exactly one copy, so there is no "which one is real?" ambiguity.)
-
-## Where things live — the PyTorch package
-
-All experiments live in `realmodel/spectre_torch/`. Modules are named by **role**, so provenance is obvious from the filename:
-
-| File | Role | Provenance |
+| Side | What it is | Provenance |
 | --- | --- | --- |
-| `paper_spectre.py` | The paper's own math, loaded from the audited vendored copy | ours? **no** — thin loader over `vendored/spectre.py` |
-| `v1_spectre.py` / `v1_gate.py` | Our first faithful transcription of the paper (R5 exact-preservation) | **ours** |
-| `causal_hybrid.py` | R9: causal linear-convolution hybrid that fixes the leak | **ours** |
-| `r10_causal.py` | R10: strictly-causal per-chunk gate (fixed in this repo) | **ours** |
-| `surgery.py` | Replace GPT-2 attention with a SPECTRE head (plumbing) | **ours** |
-| `data.py` `evaluate.py` `memlog.py` `xval.py` `train.py` `report.py` `leakage.py` | Data, evaluation, logging, cross-validation, training loop, reporting, causality probe | **ours** |
+| `reproduction/vendored/spectre.py` | The paper author's own PyTorch implementation, byte-identical to upstream ([jacobfa/fft](https://github.com/jacobfa/fft) @ `6aa353e`), SHA-256-pinned | Not ours |
+| `reproduction/spectre_paper/official.py` | Thin loader for the vendored math + GPT-2 transplant of it — "our math matches the author's" holds by construction, not transcription | Ours (loader only) |
+| `reproduction/spectre_paper/surgery.py`, `data.py`, `evaluate.py`, `memlog.py` | Neutral GPT-2 geometry, transplant helpers, data/eval/memory infrastructure | Ours (infrastructure only) |
+| `research/spectre_research/v1_spectre.py`, `v1_gate.py` | R5: our causal reimplementation of the paper's layer | Ours |
+| `research/spectre_research/causal_hybrid.py` | R9: the author's gate + strictly causal mixing | Ours |
+| `research/spectre_research/r10_causal.py` | R10: strictly-causal per-chunk gate (fixes the gate-descriptor leak, Issue #3) | Ours |
+| `research/spectre_research/transplant.py` | GPT-2 surgery warm-init for the v1 layer | Ours |
+| `research/spectre_research/train.py`, `report.py`, `leakage.py` | Experiment drivers over all variants (training, reporting, causality probe) | Ours |
 
 ## Running it
 
-The oracle crate lives in `oracle/` (it moved off the root a while ago so the root stops looking like a tangled Rust+Python project). Run cargo from there:
+One Python environment at the repo root (Python 3.12+, Apple Silicon MPS or CPU; ~2.5 GB RAM):
 
 ```bash
-cd oracle
-cargo test                                            # 74 tests
-cargo run --release --features opcount --bin claims_report -- ../../docs/claims-report.md
+uv run pytest -q                                      # all tests (reproduction + research)
+uv run python -m spectre_research.train               # fine-tune (~7 min/epoch on M-series)
+uv run python -m spectre_research.report              # writes docs/realmodel-report.md
+uv run python -m spectre_research.leakage             # causality probe (position-0 loss is decisive)
 ```
 
-PyTorch real-model validation (Python 3.12, Apple Silicon / CPU; ~2.5 GB RAM):
-
-```bash
-cd realmodel
-uv run pytest tests/ -q                               # 32 tests
-uv run python -m spectre_torch.train                  # fine-tune (~7 min/epoch on M-series)
-uv run python -m spectre_torch.report                 # writes docs/realmodel-report.md
-```
+Training variants: `--official` (the paper's own math), `--official-causal` (R9), `--r10` / `--official-causal-r10` (R10 gate), `--cotraining` (unfreeze backbone), `--resume` (continue an interrupted run).
 
 ### Resumable training
 
-`train.py` is written to be babysitable *and* stoppable:
-
 - `--save-every-steps N` — full-state checkpoint (`<ckpt>.latest.pt`) every `N` steps.
 - SIGINT / Ctrl-C / SIGTERM — saves and exits immediately.
-- `--resume` — restores step, optimizer, and mid-epoch position from the latest checkpoint, so an interrupted run continues where it left off with no lost progress.
+- `--resume` — restores step, optimizer, and mid-epoch position, so an interrupted run continues with no lost progress.
 
 ```bash
-uv run python -m spectre_torch.train --save-every-steps=25   # checkpoint every 25 steps
-uv run python -m spectre_torch.train --resume                # continue from the latest checkpoint
+uv run python -m spectre_research.train --save-every-steps=25
+uv run python -m spectre_research.train --resume
 ```
 
 ## Headline result
@@ -88,16 +73,16 @@ Replacing GPT-2's attention with SPECTRE and fine-tuning only the transplanted p
 | SPECTRE, frozen backbone (8 epochs) | 49.13 | 1.620 |
 | SPECTRE, co-trained backbone (10 epochs) | 47.36 | 1.562 |
 
-**Verdict: the mechanism learns (perplexity 230 → 47 after surgery) and its gates become spectrally selective and input-discriminative exactly as the paper predicts — but it does not recover baseline quality within a laptop-scale fine-tuning budget.** The evidence points to the frozen backbone having been pretrained *with attention*; co-training helps modestly, and the remaining gap likely requires pretraining-scale budgets. Full details and diagnostics: [`docs/realmodel-report.md`](docs/realmodel-report.md).
+**Verdict: the mechanism learns (perplexity 230 → 47 after surgery) and its gates become spectrally selective and input-discriminative exactly as the paper predicts — but it does not recover baseline quality within a laptop-scale fine-tuning budget.** Full details and diagnostics: [`docs/realmodel-report.md`](docs/realmodel-report.md).
 
-## The causal-mixing fix
+## The causality finding (our main research result so far)
 
-The paper's circular convolution leaks future tokens in an autoregressive setting. This repo fixes it in two versions:
+The paper's own math (R8 experiment: the vendored implementation, trained honestly) **collapses to a next-token copier**: the circular mixing reads one token from the future (position-0 loss 0.0028 vs 6.4–7.2 for honest models), reaching test PPL 1.00 — which explains the paper's headline number. The honest paths:
 
-- **R9 causal hybrid** (`causal_hybrid.py`): causal linear convolution (zero-padded FFT) that is mathematically faithful to the paper and provably leak-free.
-- **R10 gate** (`r10_causal.py`): a strictly-causal gate with a `causal_chunks` knob — `0` preserves the legacy R5/R9 behavior exactly; `≥2` (default `4`) enables the strictly-causal per-chunk gate.
+- **R9 causal hybrid** (`research/spectre_research/causal_hybrid.py`): author gate + zero-padded linear convolution — provably leak-free, test PPL 57.94 (1.911×).
+- **R10 gate** (`research/spectre_research/r10_causal.py`): strictly-causal per-chunk gate — `causal_chunks=0` reproduces R5/R9 exactly; `≥2` (default 4) closes the gate-descriptor future leak that earlier "causal" labels missed (Issue #3).
 
-Causality is tested directly: a causality probe (in `leakage.py`) measures whether a head's gate depends on future tokens; the leak-free variants score **0.000000** where the paper's original mechanism and R5 score large and positive.
+Causality is measured directly by the probe in `research/spectre_research/leakage.py`; a naive shuffle-the-future test cannot catch one-step copying — use the position-0 loss.
 
 ## Key documents
 
@@ -105,5 +90,6 @@ Causality is tested directly: a causality probe (in `leakage.py`) measures wheth
 - [`docs/claims-report.md`](docs/claims-report.md) — every reproducible paper claim, verified PASS
 - [`docs/plan-realmodel.md`](docs/plan-realmodel.md) — Phase 2 plan: the GPT-2 transplant experiment design
 - [`docs/realmodel-report.md`](docs/realmodel-report.md) — the final validation report with the verdict
+- [`docs/audit-vs-official.md`](docs/audit-vs-official.md) — our transcription vs the author's code, differences recorded
 - [`docs/deviations.md`](docs/deviations.md) — every place reality differed from plan (and from our own experiments), and why
 - [`AGENTS.md`](AGENTS.md) — the project's north star (reduce attention's O(n²) to O(n log n))
