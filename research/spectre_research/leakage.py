@@ -19,6 +19,11 @@ Test C (revised shuffle): score only predictions of tokens 1..256 after
      probe that exposes the gate-descriptor leak the mixing tests above miss:
      the convolution was already causal, but the *kernel* was pooled over the
      whole window, so it moved whenever any future token moved.
+   Test E (prefix consistency, Issue #6): model(x[:, :k]) must equal
+     model(x)[:, :k]. Tests A-D all feed full-length windows, so they cannot see
+     a layout that depends on the total length (R10's old n*c/C chunk
+     boundaries): the future's CONTENT was never read, yet the answer for the
+     first k tokens changed when more tokens followed. Decoding relies on this.
 
 Run: uv run python -m spectre_research.leakage
 """
@@ -44,6 +49,10 @@ CKPT_OFFICIAL_CAUSAL = _CKPT_DIR / "best-official-causal.pt"
 R10_CAUSAL_CHUNKS = 4
 N_BLOCKS = 24
 SPLIT = 256
+# Deliberately not multiples of the 256-token chunk: cutting inside a chunk is
+# the case where a length-relative layout shows up (cuts on a boundary can hide it).
+PREFIX_LENGTHS = (300, 600, 777)
+PREFIX_TOLERANCE = 1e-3  # float32 logits through 12 layers; a layout bug moves them by ~1
 
 
 @torch.no_grad()
@@ -82,6 +91,23 @@ def _future_invariance(model, ids: torch.Tensor, split: int) -> float:
 
 
 @torch.no_grad()
+def _prefix_consistency(model, ids: torch.Tensor, prefix_lengths=PREFIX_LENGTHS) -> float:
+    """Test E: largest logit change at positions < k between model(ids[:, :k]) and model(ids)[:, :k].
+
+    Unlike Test D nothing is perturbed: the same tokens are scored with and
+    without the tokens that follow. A prefix-consistent model returns the same
+    logits (up to float32 rounding); a length-relative layout does not.
+    """
+    full_logits = model(ids).logits
+    largest_change = 0.0
+    for prefix_length in prefix_lengths:
+        prefix_logits = model(ids[:, :prefix_length]).logits
+        change = (prefix_logits - full_logits[:, :prefix_length]).abs().max().item()
+        largest_change = max(largest_change, change)
+    return largest_change
+
+
+@torch.no_grad()
 def _run(name: str, build, ckpt_path: str | None, ids: torch.Tensor, shuffled: torch.Tensor):
     model = GPT2LMHeadModel.from_pretrained("gpt2")
     build(model)
@@ -99,11 +125,15 @@ def _run(name: str, build, ckpt_path: str | None, ids: torch.Tensor, shuffled: t
     delta = loss_shuf - loss_orig
     # Test D: past logits must not move when the tail is randomized.
     future_delta = _future_invariance(model, ids.to(DEVICE), SPLIT)
+    # Test E: the same tokens must score the same with and without what follows.
+    prefix_delta = _prefix_consistency(model, ids.to(DEVICE))
 
     if future_delta > 1e-4:
         verdict = f"LEAKS (future tail moves past logits by {future_delta:.4f})"
     elif pos0 < 1.0:
         verdict = "LEAKS (reads future)"
+    elif prefix_delta > PREFIX_TOLERANCE:
+        verdict = f"NOT PREFIX-CONSISTENT (logits depend on total length, delta {prefix_delta:.4f})"
     else:
         verdict = "causal-consistent"
     print(f"{name}:")
@@ -111,6 +141,7 @@ def _run(name: str, build, ckpt_path: str | None, ids: torch.Tensor, shuffled: t
     print(f"  B. mean loss, first 64 positions:                 {first64:.4f}")
     print(f"  C. loss tok 1..256 orig vs future-shuffled:       {loss_orig:.4f} vs {loss_shuf:.4f} (delta {delta:+.4f})")
     print(f"  D. past-logit change when tail randomized:        {future_delta:.6f} (strictly causal: 0)")
+    print(f"  E. logit change when only a prefix is given:      {prefix_delta:.6f} (prefix-consistent: ~0)")
     print(f"  -> {verdict}\n")
     del model
 

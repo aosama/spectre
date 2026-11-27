@@ -14,7 +14,7 @@ causality tests vacuous).
 import torch
 import torch.nn as nn
 
-from .r10_causal import causal_query_pools, chunked_causal_conv
+from .r10_causal import causal_query_pools, chunk_length_for, chunked_causal_conv, effective_chunk_length
 from .v1_gate import SpectreGate, gelu_tanh
 from .r11_chunk0_init import initialize_gate_from_empty_prefix
 
@@ -64,6 +64,8 @@ class SpectreHead(nn.Module):
             raise ValueError("causal_chunks must be 0 (legacy) or >= 2")
         if chunk0_init and causal_chunks < 2:
             raise ValueError("chunk0_init requires causal_chunks >= 2")
+        if causal_chunks >= 2:
+            chunk_length_for(n_fft, causal_chunks)  # fail at construction, not at first forward
         self.d_model = d_model
         self.d_head = d_head
         self.n_fft = n_fft
@@ -80,26 +82,22 @@ class SpectreHead(nn.Module):
         nn.init.uniform_(self.wq, -a, a)
         nn.init.uniform_(self.wv, -a, a)
 
-    @property
-    def n_chunks(self) -> int:
-        return 1 if self.causal_chunks == 0 else self.causal_chunks
-
     def _kernels(self, q: torch.Tensor) -> torch.Tensor:
-        """(B, C, n_fft) per-chunk kernels: causal pools for R10, full-window mean for legacy."""
-        c = self.n_chunks
-        if c == 1:
+        """(B, K, n_fft) per-chunk kernels: causal pools for R10, full-window mean for legacy."""
+        if self.causal_chunks == 0:
             g = self.v1_gate(q.mean(dim=1)).unsqueeze(1)  # (B, 1, F) legacy: pool over the whole window
         else:
-            pools = causal_query_pools(q, c)  # (B, C, d_head)
-            g = torch.stack([self.v1_gate(pools[:, i]) for i in range(c)], dim=1)  # (B, C, F)
+            pools = causal_query_pools(q, chunk_length_for(self.n_fft, self.causal_chunks))  # (B, K, d_head)
+            g = torch.stack([self.v1_gate(pools[:, i]) for i in range(pools.shape[1])], dim=1)  # (B, K, F)
         return torch.fft.irfft(g, n=self.n_fft, dim=-1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, n, d_model)
         q = x @ self.wq + self.bq  # (B, n, d_head)
         v = x @ self.wv + self.bv  # (B, n, d_head)
-        kernels = self._kernels(q)  # (B, C, n_fft)
-        return chunked_causal_conv(v, kernels, self.n_chunks)  # (B, n, d_head)
+        kernels = self._kernels(q)  # (B, K, n_fft)
+        chunk_length = effective_chunk_length(x.shape[1], self.n_fft, self.causal_chunks)
+        return chunked_causal_conv(v, kernels, chunk_length)  # (B, n, d_head)
 
 
 class SpectreLayer(nn.Module):
@@ -124,6 +122,8 @@ class SpectreLayer(nn.Module):
         assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
         if chunk0_init and causal_chunks < 2:
             raise ValueError("chunk0_init requires causal_chunks >= 2")
+        if causal_chunks >= 2:
+            chunk_length_for(n_fft, causal_chunks)  # fail at construction, not at first forward
         self.d_model = d_model
         self.n_heads = n_heads
         self.n_fft = n_fft
@@ -145,15 +145,11 @@ class SpectreLayer(nn.Module):
         )
         self.wo = nn.Linear(d_model, d_model)
 
-    @property
-    def n_chunks(self) -> int:
-        return 1 if self.causal_chunks == 0 else self.causal_chunks
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, n, d_model)
         B, n, _ = x.shape
         H, d, N = self.n_heads, self.d_head, self.n_fft
-        C = self.n_chunks
+        chunk_length = effective_chunk_length(n, N, self.causal_chunks)
 
         # One plain matmul with concatenated per-head weights (GPT-2's own
         # c_attn pattern): (B, n, d_model) @ (d_model, H*d) -> (B, n, H*d).
@@ -167,7 +163,7 @@ class SpectreLayer(nn.Module):
         q = (x @ wq_all + bq_all).view(B, n, H, d)
         v = (x @ wv_all + bv_all).view(B, n, H, d)
 
-        # Batched gate: per-head LN/MLP weights stacked, applied over (H, B*C, d)
+        # Batched gate: per-head LN/MLP weights stacked, applied over (H, B*K, d)
         gates = [h.v1_gate for h in self.heads]
         ln_w = torch.stack([g.ln.weight for g in gates])  # (H, d)
         ln_b = torch.stack([g.ln.bias for g in gates])
@@ -177,31 +173,33 @@ class SpectreLayer(nn.Module):
         l2_b = torch.stack([g.l2.bias for g in gates])  # (H, 2F)
         mrb = torch.stack([g.modrelu_bias for g in gates])  # (H, F)
 
-        if C == 1:
+        if self.causal_chunks == 0:
+            chunk_count = 1  # legacy: one chunk spanning the window
             q_h = q.mean(dim=1).permute(1, 0, 2)  # (H, B, d) legacy full-window pool
         else:
-            pools = causal_query_pools(q.reshape(B, n, H * d), C)  # (B, C, H*d)
-            q_h = pools.view(B, C, H, d).permute(2, 0, 1, 3).reshape(H, B * C, d)
+            pools = causal_query_pools(q.reshape(B, n, H * d), chunk_length)  # (B, K, H*d)
+            chunk_count = pools.shape[1]  # K chunks: > causal_chunks when n > n_fft, 1 when n < chunk_length
+            q_h = pools.view(B, chunk_count, H, d).permute(2, 0, 1, 3).reshape(H, B * chunk_count, d)
         # LayerNorm per head (the gate's LN), batched over heads.
         ln_mean = q_h.mean(dim=-1, keepdim=True)
         ln_var = q_h.var(dim=-1, unbiased=False, keepdim=True)
         q_ln = (q_h - ln_mean) / torch.sqrt(ln_var + 1e-5) * ln_w.unsqueeze(1) + ln_b.unsqueeze(1)
-        h_hid = torch.baddbmm(l1_b.unsqueeze(1), q_ln, l1_w.permute(0, 2, 1))  # (H, B*C, hidden)
+        h_hid = torch.baddbmm(l1_b.unsqueeze(1), q_ln, l1_w.permute(0, 2, 1))  # (H, B*K, hidden)
         h_hid = gelu_tanh(h_hid)
-        out2 = torch.baddbmm(l2_b.unsqueeze(1), h_hid, l2_w.permute(0, 2, 1))  # (H, B*C, 2F)
-        g = torch.complex(out2[..., 0::2], out2[..., 1::2])  # (H, B*C, F)
+        out2 = torch.baddbmm(l2_b.unsqueeze(1), h_hid, l2_w.permute(0, 2, 1))  # (H, B*K, 2F)
+        g = torch.complex(out2[..., 0::2], out2[..., 1::2])  # (H, B*K, F)
         m = g.abs()
-        s = m + mrb.unsqueeze(1)  # (H, B*C, F)
+        s = m + mrb.unsqueeze(1)  # (H, B*K, F)
         safe_m = torch.where(m > 0, m, torch.ones_like(m))
         scale = torch.where((s > 0) & (m > 0), s / safe_m, torch.zeros_like(m))
         g = g * scale
-        # g: (H, B*C, F) complex
+        # g: (H, B*K, F) complex
 
-        h_kern = torch.fft.irfft(g, n=N, dim=-1)  # (H, B*C, N) real kernels
+        h_kern = torch.fft.irfft(g, n=N, dim=-1)  # (H, B*K, N) real kernels
 
         # Chunked causal conv, batched over (H*B) and channels d:
         v_h = v.permute(2, 0, 1, 3).reshape(H * B, n, d)  # (H*B, n, d)
-        k_h = h_kern.reshape(H, B, C, N).reshape(H * B, C, N)  # (H*B, C, N)
-        y = chunked_causal_conv(v_h, k_h, C)  # (H*B, n, d)
+        k_h = h_kern.reshape(H, B, chunk_count, N).reshape(H * B, chunk_count, N)  # (H*B, K, N)
+        y = chunked_causal_conv(v_h, k_h, chunk_length)  # (H*B, n, d)
         y = y.reshape(H, B, n, d).permute(1, 2, 0, 3).reshape(B, n, H * d)
         return self.wo(y)  # (B, n, d_model)

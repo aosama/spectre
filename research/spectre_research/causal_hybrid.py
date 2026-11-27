@@ -25,7 +25,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .r10_causal import causal_query_pools, chunked_causal_conv
+from .r10_causal import causal_query_pools, chunk_length_for, chunked_causal_conv, effective_chunk_length
 from spectre_paper.official import SpectreAttentionOfficial, official
 from spectre_paper.surgery import D_HEAD
 
@@ -68,6 +68,8 @@ class CausalSpectreHead(_official.SpectreHead):
         super().__init__(head_dim, fft_size=fft_size, d_gate=d_gate, num_groups=num_groups)
         if causal_chunks < 0 or causal_chunks == 1:
             raise ValueError("causal_chunks must be 0 (legacy) or >= 2")
+        if causal_chunks >= 2:
+            chunk_length_for(self.n_fft, causal_chunks)  # fail at construction, not at first forward
         self.causal_chunks = causal_chunks
 
     def forward(
@@ -82,34 +84,36 @@ class CausalSpectreHead(_official.SpectreHead):
         B, N, d = x.shape
         G, dg = self.G, self.d // self.G
         assert d == self.d and d % G == 0
-        n_chunks = 1 if self.causal_chunks == 0 else self.causal_chunks
+        chunk_length = effective_chunk_length(N, self.n_fft, self.causal_chunks)
 
         # --- official gate path, verbatim (vendored lines 503-535) ---
         Q = self.W_q(x)
         V = self.W_v(x)
-        if n_chunks == 1:
+        if self.causal_chunks == 0:
+            chunk_count = 1  # legacy: one chunk spanning the window
             q_pool = self.q_norm(self.pooling(Q))  # (B, d) R9 legacy: DCT over the whole window
         else:
-            q_pool = self.q_norm(causal_query_pools(Q, n_chunks))  # (B, C, d) R10
-        pool_2d = q_pool.reshape(B * n_chunks, d)
+            q_pool = self.q_norm(causal_query_pools(Q, chunk_length))  # (B, K, d) R10
+            chunk_count = q_pool.shape[1]  # K: > causal_chunks when N > n_fft, 1 when N < chunk_length
+        pool_2d = q_pool.reshape(B * chunk_count, d)
 
-        gate_rs = self.gate_mlp(pool_2d).view(B * n_chunks, self.G, self.B, 2)
+        gate_rs = self.gate_mlp(pool_2d).view(B * chunk_count, self.G, self.B, 2)
         gate_anchor = torch.view_as_complex(gate_rs)
         gate_half = interp_complex_1d_cubic(gate_anchor, size=self.F_half)
-        gate_half = self.modrelu(gate_half.reshape(B * n_chunks, -1)).view_as(gate_half)
+        gate_half = self.modrelu(gate_half.reshape(B * chunk_count, -1)).view_as(gate_half)
         if pos_phase is not None:
             gate_half = gate_half * pos_phase.unsqueeze(1 if pos_phase.dim() == 2 else 0)
 
         # --- causal mixing: per-chunk kernel, zero-padded linear convolution ---
-        kernels = torch.fft.irfft(gate_half, n=self.n_fft, dim=-1)  # (B*C, G, n_fft)
+        kernels = torch.fft.irfft(gate_half, n=self.n_fft, dim=-1)  # (B*K, G, n_fft)
         kernels = (
-            kernels.view(B, n_chunks, G, self.n_fft)
+            kernels.view(B, chunk_count, G, self.n_fft)
             .permute(2, 0, 1, 3)
-            .reshape(G * B, n_chunks, self.n_fft)
+            .reshape(G * B, chunk_count, self.n_fft)
         )
 
         v_grouped = V.view(B, N, G, dg).permute(2, 0, 3, 1).reshape(G * B, dg, N).transpose(1, 2)
-        mixed = chunked_causal_conv(v_grouped, kernels, n_chunks)  # (G*B, N, dg)
+        mixed = chunked_causal_conv(v_grouped, kernels, chunk_length)  # (G*B, N, dg)
         mixed = mixed.transpose(1, 2)
 
         result = self.dropout(mixed.reshape(G, B, dg, N).permute(1, 3, 0, 2).reshape(B, N, d))
@@ -117,7 +121,7 @@ class CausalSpectreHead(_official.SpectreHead):
             # The vendored wrapper concatenates pools to (B, embed_dim) for the
             # wavelet path: hand back one (B, d) pool — the last chunk's, the
             # richest causal descriptor.
-            return result, (q_pool if n_chunks == 1 else q_pool[:, -1])
+            return result, (q_pool if self.causal_chunks == 0 else q_pool[:, -1])
         return result
 
 
