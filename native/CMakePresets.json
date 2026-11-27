@@ -1,6 +1,10 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 27, "patch": 0 },
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 27,
+    "patch": 0
+  },
   "configurePresets": [
     {
       "name": "base",
@@ -12,47 +16,118 @@
       "name": "dev",
       "displayName": "Debug, all devices",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
     },
     {
       "name": "release",
       "displayName": "Optimized build",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     },
     {
       "name": "ci",
       "displayName": "Optimized build for CI (CPU-only tests)",
       "inherits": "base",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
     }
   ],
   "buildPresets": [
-    { "name": "dev", "configurePreset": "dev" },
-    { "name": "release", "configurePreset": "release" },
-    { "name": "ci", "configurePreset": "ci" }
+    {
+      "name": "dev",
+      "configurePreset": "dev"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "ci",
+      "configurePreset": "ci"
+    }
   ],
   "testPresets": [
     {
       "name": "dev",
       "configurePreset": "dev",
-      "output": { "outputOnFailure": true },
-      "filter": { "exclude": { "label": "acceptance|performance" } }
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "acceptance|performance"
+        }
+      }
     },
     {
       "name": "release",
       "configurePreset": "release",
-      "output": { "outputOnFailure": true },
-      "filter": { "exclude": { "label": "acceptance|performance" } }
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "acceptance|performance"
+        }
+      }
     },
     {
       "name": "ci",
       "configurePreset": "ci",
-      "output": { "outputOnFailure": true },
+      "output": {
+        "outputOnFailure": true
+      },
       "filter": {
-        "include": { "label": "unit|component|integration" },
-        "exclude": { "name": "/gpu$" }
+        "include": {
+          "label": "unit|component|integration"
+        },
+        "exclude": {
+          "name": "/gpu$"
+        }
       }
+    }
+  ],
+  "workflowPresets": [
+    {
+      "name": "dev",
+      "displayName": "Configure, build and test (Debug, all devices)",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "dev"
+        },
+        {
+          "type": "build",
+          "name": "dev"
+        },
+        {
+          "type": "test",
+          "name": "dev"
+        }
+      ]
+    },
+    {
+      "name": "ci",
+      "displayName": "Configure, build and test (Release, CPU only)",
+      "steps": [
+        {
+          "type": "configure",
+          "name": "ci"
+        },
+        {
+          "type": "build",
+          "name": "ci"
+        },
+        {
+          "type": "test",
+          "name": "ci"
+        }
+      ]
     }
   ]
 }
