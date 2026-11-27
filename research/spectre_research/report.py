@@ -18,7 +18,7 @@ from spectre_paper.official import swap_gpt2_attention_official
 from spectre_paper.surgery import freeze_backbone
 
 from .causal_hybrid import swap_gpt2_attention_official_causal
-from .r10_causal import causal_query_pools
+from .r10_causal import causal_query_pools, chunk_length_for
 from .transplant import swap_gpt2_attention
 
 DEVICE = "mps" if torch.backends.mps.is_available() else "cpu"
@@ -86,8 +86,8 @@ def _gate_magnitude_stats(model, inputs: torch.Tensor, causal_chunks: int = 1) -
                 all_mean.append(mag.mean().item())
                 all_std.append(mag.std(dim=1).mean().item())
             else:
-                pools = causal_query_pools(q, causal_chunks)  # (B, C, d)
-                g = torch.stack([head.v1_gate(pools[:, i]) for i in range(causal_chunks)], dim=1)  # (B, C, F)
+                pools = causal_query_pools(q, chunk_length_for(head.n_fft, causal_chunks))  # (B, K, d)
+                g = torch.stack([head.v1_gate(pools[:, i]) for i in range(pools.shape[1])], dim=1)  # (B, K, F)
                 mag = g.abs()
                 all_mean.append(mag.mean().item())
                 all_std.append(mag.std(dim=2).mean().item())
@@ -99,7 +99,7 @@ def _gate_pairwise_distance(model, inputs: torch.Tensor, causal_chunks: int = 1)
     """Mean pairwise cosine distance between gate vectors of different inputs.
 
     For R10 the gate is one vector per (input, chunk); we flatten that to
-    (B*C, 2F) and measure how separable the gate vectors are across inputs.
+    (B*K, 2F) and measure how separable the gate vectors are across inputs.
     """
     dists = []
     for block, x in zip(model.transformer.h, _layer_inputs(model, inputs)):
@@ -108,12 +108,12 @@ def _gate_pairwise_distance(model, inputs: torch.Tensor, causal_chunks: int = 1)
             if causal_chunks == 1:
                 g = head.v1_gate(q.mean(dim=1))  # (B, F)
             else:
-                pools = causal_query_pools(q, causal_chunks)  # (B, C, d)
-                g = torch.stack([head.v1_gate(pools[:, i]) for i in range(causal_chunks)], dim=1)  # (B, C, F)
+                pools = causal_query_pools(q, chunk_length_for(head.n_fft, causal_chunks))  # (B, K, d)
+                g = torch.stack([head.v1_gate(pools[:, i]) for i in range(pools.shape[1])], dim=1)  # (B, K, F)
             gv = torch.view_as_real(g)
             gv = gv.reshape(g.shape[0], -1) if causal_chunks == 1 else gv.reshape(-1, gv.shape[-1])
             gv = gv / gv.norm(dim=1, keepdim=True).clamp_min(1e-8)
-            cos = gv @ gv.t()  # (B*C, B*C)
+            cos = gv @ gv.t()  # (B*K, B*K)
             n = cos.shape[0]
             off = cos[~torch.eye(n, dtype=torch.bool, device=cos.device)]
             dists.append((1.0 - off).mean().item())
