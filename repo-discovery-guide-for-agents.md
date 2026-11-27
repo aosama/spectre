@@ -28,6 +28,7 @@ This repository reproduces the SPECTRE attention computations (arXiv:2502.18394,
 - macOS memory: `ps -o rss=` for RSS, `sysctl -n vm.swapusage` for swap; MPS `driver_allocated_memory` >> `current_allocated_memory` is a reserved pool, not a leak. Run one heavy process at a time.
 - Training checkpoints (`checkpoints/*.pt` at the repo root, gitignored) hold model + optimizer state + epoch/step/bad_epochs; `--resume` warm-starts AdamW if optimizer state is absent.
 - R11 (`--r11`) is the v1 R10 gate with each head's final gate projection initialized so every chunk begins with the empty-prefix (chunk-0) gate output. This preserves the cold-start kernel across chunks; gates remain trainable. No training result is measured yet.
+- The `[heartbeat]` line in `train.py` shows `micro k/4` progress and the loss of the last COMPLETED optimizer step. Never print a loss inside the accumulation loop: partial sums are 1/4, 1/2, 3/4 of the real loss and look like future-token leakage (Issue #7).
 - Checkpoint paths are computed from module locations (`Path(__file__).resolve().parents[2] / "checkpoints"`) — moving `spectre_research/` deeper than two levels below the root breaks them silently.
 - The Python environment lives at the repo root (single `pyproject.toml`); run `uv run ...` from the repo root. Old `cd realmodel && uv run` muscle memory is obsolete — `realmodel/` no longer exists.
 - `docs/` is a historical archive (plans, reports, deviations). It still references the deleted Rust oracle and old `realmodel/` paths — that is expected; do not "fix" archived records.
@@ -69,7 +70,7 @@ repo-discovery-guide-...      This guide
 
 ## Entry Points
 
-- Full test suite: `uv run pytest -q` (37 tests: reproduction + research) from the repo root.
+- Full test suite: `uv run pytest -q` (47 tests: reproduction + research) from the repo root.
 - Reproduction tests only: `uv run pytest reproduction/tests -q`; research only: `uv run pytest research/tests -q`.
 - Training: `uv run python -m spectre_research.train [--official | --official-causal | --r10 | --r11 | --official-causal-r10] [--cotraining] [--budget-minutes=N] [--resume] [--save-every-steps=N]`.
 - Report: `uv run python -m spectre_research.report` (writes `docs/realmodel-report.md`).
@@ -78,7 +79,7 @@ repo-discovery-guide-...      This guide
 
 ## What To Verify
 
-- `uv run pytest -q` is green (37 tests) with no warnings.
+- `uv run pytest -q` is green (47 tests) with no warnings.
 - `uv run python -c "import spectre_paper.official, spectre_research.train"` imports cleanly.
 - The vendored SHA pin holds: `uv run pytest reproduction/tests/test_official.py -q` (its first test checks it).
 - `git status` shows no Rust anywhere (no `oracle/`, no `xval-dump/`, no `Cargo.*`).
