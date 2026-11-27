@@ -3,3 +3,6 @@ __pycache__/
 .pytest_cache/
 .DS_Store
 checkpoints/
+native/build/
+CMakeUserPresets.json
+data/wikitext2-gpt2-tokens.safetensors
