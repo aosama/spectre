@@ -94,3 +94,7 @@ Causality is measured directly by the probe in `research/spectre_research/leakag
 - [`docs/audit-vs-official.md`](docs/audit-vs-official.md) — our transcription vs the author's code, differences recorded
 - [`docs/deviations.md`](docs/deviations.md) — every place reality differed from plan (and from our own experiments), and why
 - [`AGENTS.md`](AGENTS.md) — the project's north star (reduce attention's O(n²) to O(n log n))
+
+## Development hooks
+
+There is no hosted CI while the research is unstable. A local pre-commit gate runs the relevant builds and tests on each commit: `pre-commit install --allow-missing-config` once per clone, details in `native/README.md`.

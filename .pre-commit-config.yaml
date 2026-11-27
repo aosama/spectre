@@ -1,0 +1,44 @@
+# Local quality gate. While the research is unstable this replaces CI: hooks run
+# on the developer's machine, with GPU access and an incremental build, so the
+# loop is seconds instead of a ~9 minute hosted build (see native/README.md for
+# how to bring GitHub Actions back).
+#
+# Install once per clone:  pre-commit install --allow-missing-config
+# (--allow-missing-config keeps commits working on branches without this file.)
+minimum_pre_commit_version: "3.0.0"
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"] # parity fixtures must stay small (Issue #5, T1.6)
+      - id: check-yaml
+      - id: check-json
+
+  - repo: local
+    hooks:
+      # Developer home paths in committed text leak personal details into a public repo.
+      # `you` is the placeholder used in documentation examples; run logs are historical.
+      - id: no-developer-home-paths
+        name: no developer home paths in committed files
+        language: pygrep
+        entry: '/Users/(?!you/)[A-Za-z0-9._-]+/|/home/(?!you/)[a-z][a-z0-9_-]*/'
+        types: [text]
+        exclude: '^(runs/|uv\.lock$)'
+
+      # Configure + build + ctest on every device (CPU and GPU), via the CMake `dev` workflow preset.
+      - id: native-build-and-tests
+        name: native C++ build and tests
+        language: system
+        entry: bash -c 'cd native && cmake --workflow --preset dev'
+        files: '^native/'
+        exclude: '^native/build/'
+        pass_filenames: false
+
+      - id: python-tests
+        name: python tests (reproduction and research)
+        language: system
+        entry: uv run pytest -q
+        files: '^((research|reproduction)/.*\.py|pyproject\.toml)$'
+        pass_filenames: false

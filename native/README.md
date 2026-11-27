@@ -67,9 +67,25 @@ ctest --preset dev
 |---|---|---|
 | `dev` | Debug | everything except labels `acceptance` and `performance*`, on CPU and GPU |
 | `release` | Release | same selection as `dev` |
-| `ci` | Release | labels `unit`, `component`, `integration`; GPU variants (`*/gpu`) excluded |
+| `ci` | Release | labels `unit`, `component`, `integration`; GPU variants (`*/gpu`) excluded. Unused while CI is off; it is what a hosted CI job should run |
 
 Tests carry CTest labels: `unit`, `component`, `integration`, `acceptance`, `performance-measurement` (reports numbers) and `performance` (asserts a threshold). Run one category with `ctest --preset dev -L unit`. Tests that touch MLX run on both devices and end in `/cpu` or `/gpu`.
+
+One-shot (configure, build, test): `cmake --workflow --preset dev`.
+
+## Pre-commit hooks (instead of CI)
+
+While the research is unstable there is no GitHub Actions CI; a local gate replaces it. Install it once per clone (needs [pre-commit](https://pre-commit.com), e.g. `brew install pre-commit`):
+
+```sh
+pre-commit install --allow-missing-config
+```
+
+On each commit, only the hooks relevant to the staged files run: `native/**` runs `cmake --workflow --preset dev` (build plus every test on CPU and GPU); Python under `research/` or `reproduction/` runs `uv run pytest -q`; every file is checked for developer home paths, merge-conflict markers, oversized files and valid YAML/JSON. Run everything by hand with `pre-commit run --all-files`. If MLX is only found through a `CMakeUserPresets.json` prefix, run `cmake --workflow --preset dev-local` yourself and commit with `git commit --no-verify`, or install MLX where CMake finds it by default.
+
+### Bringing GitHub Actions back
+
+The T0.2 workflow (macOS arm64 runner, MLX v0.32.5 built from source and cached, then `cmake --preset ci`, build, `ctest --preset ci`) is kept in git history: `git show 1b8a759:.github/workflows/native.yml` (commit from PR #12; the PR ref also keeps it). Re-enable by restoring that file under `.github/workflows/`; the `ci` presets above are what it runs.
 
 ## Configuration
 
