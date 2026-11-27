@@ -63,7 +63,9 @@ endif()
 
 add_library(spectre_core STATIC
   src/config/config_types.cpp
-  src/config/yaml_config_loader.cpp)
+  src/config/yaml_config_loader.cpp
+  src/mixing/chunk_layout.cpp
+  src/mixing/causal_query_pool.cpp)
 target_include_directories(spectre_core PUBLIC include)
 # MLX is linked now, before any tensor code exists, so a broken toolchain
 # surfaces in T0.1 rather than in the first numerical ticket.
@@ -72,16 +74,26 @@ target_link_libraries(spectre_core PUBLIC mlx PRIVATE yaml-cpp::yaml-cpp spectre
 enable_testing()
 include(GoogleTest)
 
+# Oracles are plain C++ with NO MLX dependency (Issue #5, trap 12): they must
+# not share code paths with what they check.
+add_library(spectre_test_oracles STATIC tests/oracles/naive_reference.cpp)
+target_include_directories(spectre_test_oracles PUBLIC tests/oracles)
+target_link_libraries(spectre_test_oracles PRIVATE spectre_warnings)
+
 # One executable per test category keeps CTest labels (unit, component,
 # integration, ...) accurate: gtest_discover_tests labels a whole executable,
 # and the presets include or exclude tests by label.
 function(spectre_add_test_suite suite_name test_label)
   add_executable(${suite_name} ${ARGN})
-  target_link_libraries(${suite_name} PRIVATE spectre_core GTest::gtest_main spectre_warnings)
+  target_include_directories(${suite_name} PRIVATE tests/support)
+  target_link_libraries(${suite_name} PRIVATE
+    spectre_core spectre_test_oracles GTest::gtest_main spectre_warnings)
   gtest_discover_tests(${suite_name} PROPERTIES LABELS ${test_label} DISCOVERY_MODE PRE_TEST)
 endfunction()
 
 spectre_add_test_suite(spectre_unit_tests unit
   tests/unit/test_config_types.cpp
   tests/unit/test_yaml_config_loader.cpp
-  tests/unit/test_mlx_toolchain.cpp)
+  tests/unit/test_mlx_toolchain.cpp
+  tests/unit/test_chunk_layout.cpp
+  tests/unit/test_causal_query_pool.cpp)
