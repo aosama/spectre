@@ -52,6 +52,7 @@ If the linker warns that `libmlx.dylib` was built for a newer macOS than the tar
 
 - CMake also searches `mlx*` directories under any prefix derived from `PATH` (for example `~/.local`), so an install at `~/.local/mlx-<version>` is found even without `CMAKE_PREFIX_PATH`. To test the "MLX too old or missing" error, add `-DCMAKE_IGNORE_PREFIX_PATH=$HOME/.local`.
 - MLX C++: `mx::fft::rfft/irfft` take `(a, n, axis, FFTNorm, StreamOrDevice)` with the norm before the device, and `item<T>()` on a `const` unevaluated array throws, so call `mx::eval` first (also recorded in `docs/deviations.md`).
+- `array::data<T>()` ignores strides and ops like `mx::take` return transposed views: call `mx::contiguous(...)` before reading results on the host, or batched results come back scrambled (the test helper `to_host_floats` does this).
 
 ## Build and test
 
