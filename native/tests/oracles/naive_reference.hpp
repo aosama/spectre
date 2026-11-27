@@ -21,4 +21,13 @@ std::vector<double> naive_whole_window_query_pool(const std::vector<double>& que
                                                   int sequence_count, int sequence_length,
                                                   int feature_width);
 
+// Direct O(n * N) evaluation of y[m] = sum_{s <= min(m, N-1)} h_{chunk(m)}[s] * v[m - s].
+// values [sequence][position][feature]; kernels [sequence][chunk][tap]; returns
+// [sequence][position][feature]. chunk(m) is the last chunk whose start is <= m.
+std::vector<double> naive_chunked_causal_convolution(const std::vector<double>& values,
+                                                     const std::vector<double>& kernels,
+                                                     int sequence_count, int sequence_length,
+                                                     int feature_width, int kernel_length,
+                                                     const std::vector<int>& chunk_start_positions);
+
 }  // namespace spectre::oracle

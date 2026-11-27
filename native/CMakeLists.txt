@@ -65,7 +65,8 @@ add_library(spectre_core STATIC
   src/config/config_types.cpp
   src/config/yaml_config_loader.cpp
   src/mixing/chunk_layout.cpp
-  src/mixing/causal_query_pool.cpp)
+  src/mixing/causal_query_pool.cpp
+  src/mixing/causal_convolution.cpp)
 target_include_directories(spectre_core PUBLIC include)
 # MLX is linked now, before any tensor code exists, so a broken toolchain
 # surfaces in T0.1 rather than in the first numerical ticket.
@@ -96,4 +97,5 @@ spectre_add_test_suite(spectre_unit_tests unit
   tests/unit/test_yaml_config_loader.cpp
   tests/unit/test_mlx_toolchain.cpp
   tests/unit/test_chunk_layout.cpp
-  tests/unit/test_causal_query_pool.cpp)
+  tests/unit/test_causal_query_pool.cpp
+  tests/unit/test_causal_convolution.cpp)

@@ -57,4 +57,33 @@ std::vector<double> naive_whole_window_query_pool(const std::vector<double>& que
   return pools;
 }
 
+std::vector<double> naive_chunked_causal_convolution(const std::vector<double>& values,
+                                                     const std::vector<double>& kernels,
+                                                     int sequence_count, int sequence_length,
+                                                     int feature_width, int kernel_length,
+                                                     const std::vector<int>& chunk_start_positions) {
+  const int chunk_count = static_cast<int>(chunk_start_positions.size());
+  std::vector<double> output(static_cast<std::size_t>(sequence_count) * sequence_length * feature_width,
+                             0.0);
+  int chunk_index = 0;
+  for (int position = 0; position < sequence_length; ++position) {
+    while (chunk_index + 1 < chunk_count && chunk_start_positions[chunk_index + 1] <= position) {
+      ++chunk_index;
+    }
+    const int reachable_taps = position + 1 < kernel_length ? position + 1 : kernel_length;
+    for (int sequence_index = 0; sequence_index < sequence_count; ++sequence_index) {
+      for (int tap = 0; tap < reachable_taps; ++tap) {
+        const double tap_weight =
+            kernels[(static_cast<std::size_t>(sequence_index) * chunk_count + chunk_index) * kernel_length + tap];
+        for (int feature_index = 0; feature_index < feature_width; ++feature_index) {
+          output[flat_index(sequence_index, position, feature_index, sequence_length, feature_width)] +=
+              tap_weight * values[flat_index(sequence_index, position - tap, feature_index, sequence_length,
+                                             feature_width)];
+        }
+      }
+    }
+  }
+  return output;
+}
+
 }  // namespace spectre::oracle
