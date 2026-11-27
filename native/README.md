@@ -48,6 +48,11 @@ and use `dev-local` wherever the commands below say `dev`.
 
 If the linker warns that `libmlx.dylib` was built for a newer macOS than the target, add `"CMAKE_OSX_DEPLOYMENT_TARGET"` to `cacheVariables` with the version named in the warning (a source-built MLX records the macOS version of the machine that built it).
 
+### Gotchas
+
+- CMake also searches `mlx*` directories under any prefix derived from `PATH` (for example `~/.local`), so an install at `~/.local/mlx-<version>` is found even without `CMAKE_PREFIX_PATH`. To test the "MLX too old or missing" error, add `-DCMAKE_IGNORE_PREFIX_PATH=$HOME/.local`.
+- MLX C++: `mx::fft::rfft/irfft` take `(a, n, axis, FFTNorm, StreamOrDevice)` with the norm before the device, and `item<T>()` on a `const` unevaluated array throws, so call `mx::eval` first (also recorded in `docs/deviations.md`).
+
 ## Build and test
 
 Run from this folder (`native/`):

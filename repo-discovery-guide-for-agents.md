@@ -8,7 +8,7 @@ A map of non-obvious facts about this repository: an earnest PyTorch reproductio
 - Update this guide in the same change when adding, removing, renaming, or discovering an expensive gotcha.
 - If `Last verified` is older than 3 days, treat the guide as suspect and re-verify.
 - Keep this guide updated before committing or pushing.
-- Last verified: 2026-11-27
+- Last verified: 2026-10-10
 
 ## Project Overview
 
@@ -16,9 +16,6 @@ This repository reproduces the SPECTRE attention computations (arXiv:2502.18394,
 
 ## Known Gotchas
 
-- **`native/` is the C++20/MLX research tree (Issue #5, in progress; only T0.1 build skeleton exists).** It never calls Python or links PyTorch; Python feeds it through fixtures and tokenized data under `tools/` (not created yet). `research/` is a frozen reference: bug fixes only, no new increments.
-- **MLX floor is 0.32.5** and Homebrew lagged at 0.32.4 on 2026-11-27: build the upstream tag into a prefix and use a git-ignored `native/CMakeUserPresets.json` (recipe in `native/README.md`). CMake also globs `mlx*` under any PATH-derived prefix such as `~/.local`, so an install at `~/.local/mlx-<version>` is found even without `CMAKE_PREFIX_PATH`; to test the "too old / missing" error use `-DCMAKE_IGNORE_PREFIX_PATH=$HOME/.local`.
-- MLX C++ traps: `mx::fft::rfft/irfft` take `(a, n, axis, FFTNorm, StreamOrDevice)` — the norm comes before the device; `item<T>()` on a `const` unevaluated array throws, so `mx::eval` first. yaml-cpp 0.8.0 needs a scoped `CMAKE_POLICY_VERSION_MINIMUM` under CMake 4 (already in `native/CMakeLists.txt`). Details in `docs/deviations.md`.
 - **Dependency direction is sacred:** `research` may import `spectre_paper`; the reproduction must never import research. The paper's math stays pristine.
 - `reproduction/vendored/spectre.py` is the author's code, byte-identical to upstream and SHA-256-pinned. Editing it breaks the loader and the pin test — never "fix" it, fix the wrapper (`reproduction/spectre_paper/official.py`).
 - `official.py` resolves the vendored file relative to its own location (`parents[1] / "vendored"`); keep that pair together if folders move again.
@@ -59,8 +56,6 @@ research/                     OUR INCREMENTS (one module per variant)
                               r11_chunk0_init (R11),
                               transplant (v1 GPT-2 surgery), train / report / leakage (drivers)
   tests/                      One test file per research module
-native/                       C++20 on MLX: all NEW research code (Issue #5; CMake presets, src/config,
-                              tests/unit so far). Never imports Python or PyTorch
 related-work/                 Caracal / CAT lineage PDFs + from-grok.md (NOT ours)
 runs/                         Training logs (tracked evidence)
 checkpoints/                  Training checkpoints (gitignored)
@@ -74,7 +69,6 @@ repo-discovery-guide-...      This guide
 
 ## Entry Points
 
-- Native (C++/MLX) build and tests, from `native/`: `cmake --preset dev && cmake --build --preset dev && ctest --preset dev` (use `dev-local` if MLX needs a prefix path; presets `dev`, `release`, `ci`).
 - Full test suite: `uv run pytest -q` (37 tests: reproduction + research) from the repo root.
 - Reproduction tests only: `uv run pytest reproduction/tests -q`; research only: `uv run pytest research/tests -q`.
 - Training: `uv run python -m spectre_research.train [--official | --official-causal | --r10 | --r11 | --official-causal-r10] [--cotraining] [--budget-minutes=N] [--resume] [--save-every-steps=N]`.
@@ -89,5 +83,4 @@ repo-discovery-guide-...      This guide
 - The vendored SHA pin holds: `uv run pytest reproduction/tests/test_official.py -q` (its first test checks it).
 - `git status` shows no Rust anywhere (no `oracle/`, no `xval-dump/`, no `Cargo.*`).
 - No file outside `docs/` and this guide references `oracle`, `realmodel`, `spectre_torch` (the old package name), or `xval`.
-- Native tree builds and passes: from `native/`, `cmake --preset dev-local && cmake --build --preset dev-local && ctest --preset dev-local` (or `dev` once MLX 0.32.5+ is findable).
 - `git log` history is intact: 18 ticket commits (T0–T17), R0–R6, audits, R8/R9 (`89bb9e6`), R10, reorg commits.
