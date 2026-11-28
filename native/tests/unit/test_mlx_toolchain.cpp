@@ -4,27 +4,18 @@
 #include <gtest/gtest.h>
 
 #include <stdexcept>
-#include <string>
-#include <vector>
 
-#include "mlx/mlx.h"
+#include "mlx_test_support.hpp"
 
 namespace mx = mlx::core;
 
 namespace {
 
-std::string device_test_suffix(const ::testing::TestParamInfo<mx::Device>& device_info) {
-  return device_info.param.type == mx::Device::cpu ? "cpu" : "gpu";
-}
-
-class MlxToolchain : public ::testing::TestWithParam<mx::Device> {};
+class MlxToolchain : public spectre::testing::DeviceTest {};
 
 }  // namespace
 
-// Names end in /cpu or /gpu so CI can drop the GPU variants with one filter.
-INSTANTIATE_TEST_SUITE_P(Devices, MlxToolchain,
-                         ::testing::Values(mx::Device(mx::Device::cpu), mx::Device(mx::Device::gpu)),
-                         device_test_suffix);
+SPECTRE_INSTANTIATE_DEVICE_TESTS(MlxToolchain);
 
 TEST_P(MlxToolchain, should_round_trip_a_real_signal_through_rfft_and_irfft) {
   const mx::Device device = GetParam();

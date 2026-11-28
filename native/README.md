@@ -103,4 +103,4 @@ spectre_layer:
 
 ## Layout
 
-See §5 of Issue #5. Implemented so far: `src/config/` (config types and the YAML loader) and `tests/unit/`. Generated artifacts (`build/`, `checkpoints/`, `data/wikitext2-gpt2-tokens.safetensors`) are git-ignored.
+See §5 of Issue #5. Implemented so far: `src/config/` (config types and the YAML loader), `src/mixing/` (chunk layout and causal query pools), `tests/unit/`, `tests/oracles/` (plain-C++ double-precision references, no MLX) and `tests/support/` (shared two-device test fixture and host/device conversion helpers). Generated artifacts (`build/`, `checkpoints/`, `data/wikitext2-gpt2-tokens.safetensors`) are git-ignored.
