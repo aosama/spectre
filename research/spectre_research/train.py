@@ -37,6 +37,8 @@ import os
 import signal
 import sys
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import torch
@@ -123,24 +125,73 @@ def _val_loss(model, val_blocks: torch.Tensor) -> float:
     return total / tokens
 
 
-def _heartbeat(start: float, step: int, total_steps: int, epoch: int, batch_loss: float, mem: MemLogger) -> None:
-    now = time.time()
-    if now - HEARTBEAT_LAST[0] < 5.0:
+@dataclass
+class _ProgressContext:
+    """What the heartbeat needs to report progress without touching the loss math."""
+
+    start: float
+    total_steps: int
+    mem: MemLogger
+    step: int = 0
+    epoch: int = 0
+    # Step this process started from (non-zero after --resume). The ETA divides
+    # this run's elapsed time, so it must count only this run's steps.
+    first_step: int = 0
+    # Loss of the last COMPLETED optimizer step (full effective batch). Never a
+    # partial gradient-accumulation sum: those are 1/4, 1/2, 3/4 of the real
+    # loss and look like impossible future-token leakage (Issue #7).
+    last_step_loss: float | None = None
+    # -inf so the first heartbeat always prints, whatever the clock's origin.
+    last_heartbeat_at: float = float("-inf")
+    # Injected so tests can control time without patching the time module.
+    clock: Callable[[], float] = field(default=time.time)
+
+
+HEARTBEAT_INTERVAL_SECONDS = 5.0
+
+
+def _heartbeat(progress: _ProgressContext, micro_done: int) -> None:
+    """Print progress and ETA at most every 5 s, with a loss that is comparable across lines."""
+    now = progress.clock()
+    if now - progress.last_heartbeat_at < HEARTBEAT_INTERVAL_SECONDS:
         return
-    HEARTBEAT_LAST[0] = now
-    elapsed = now - start
-    pct = 100.0 * step / total_steps
-    eta_s = elapsed / max(step, 1) * (total_steps - step)
-    eta_m, eta_s = divmod(int(eta_s), 60)
+    progress.last_heartbeat_at = now
+    elapsed = now - progress.start
+    pct = 100.0 * progress.step / progress.total_steps
+    steps_done_this_run = max(progress.step - progress.first_step, 1)
+    eta_total_seconds = elapsed / steps_done_this_run * (progress.total_steps - progress.step)
+    eta_minutes, eta_seconds_part = divmod(int(eta_total_seconds), 60)
+    loss_text = "n/a" if progress.last_step_loss is None else f"{progress.last_step_loss:.4f}"
     print(
-        f"[heartbeat] {pct:5.1f}% step {step}/{total_steps} epoch {epoch} "
-        f"loss {batch_loss:.4f} elapsed {int(elapsed)}s ETA {eta_m}m{eta_s:02d}s",
+        f"[heartbeat] {pct:5.1f}% step {progress.step}/{progress.total_steps} "
+        f"micro {micro_done}/{ACCUM_STEPS} epoch {progress.epoch} "
+        f"last-step loss {loss_text} elapsed {int(elapsed)}s ETA {eta_minutes}m{eta_seconds_part:02d}s",
         flush=True,
     )
-    mem.log(f"step {step}")
+    progress.mem.log(f"step {progress.step}")
 
 
-HEARTBEAT_LAST = [0.0]
+def _accumulate_step(model, train_blocks, perm, block_index: int, progress: _ProgressContext) -> tuple[float, int]:
+    """Forward and backward over ACCUM_STEPS micro-batches.
+
+    Returns (full-batch mean loss, tokens processed). Gradients are left
+    accumulated on the parameters for the caller's optimizer step.
+    """
+    full_batch_loss = 0.0
+    tokens_in_step = 0
+    for micro in range(ACCUM_STEPS):
+        first_block = block_index * EFFECTIVE_BATCH + micro * MICRO_BATCH
+        batch = train_blocks[perm[first_block : first_block + MICRO_BATCH]].to(DEVICE)
+        logits = model(batch).logits
+        micro_loss = torch.nn.functional.cross_entropy(
+            logits[:, :-1, :].reshape(-1, logits.shape[-1]),
+            batch[:, 1:].reshape(-1),
+        ) / ACCUM_STEPS
+        micro_loss.backward()
+        full_batch_loss += micro_loss.item()
+        tokens_in_step += batch.numel()
+        _heartbeat(progress, micro + 1)
+    return full_batch_loss, tokens_in_step
 
 
 def main() -> None:
@@ -280,6 +331,7 @@ def main() -> None:
 
     tokens_seen = 0
     start = time.time()
+    progress = _ProgressContext(start=start, total_steps=total_steps, mem=mem, first_step=step)
     stopped = "completed"
 
     def _validate_and_save(epoch: int, label: str) -> bool:
@@ -323,19 +375,10 @@ def main() -> None:
             for g in opt.param_groups:
                 g["lr"] = lr * g.get("lr_scale", 1.0)
             opt.zero_grad(set_to_none=True)
-            batch_loss = 0.0
-            for micro in range(ACCUM_STEPS):
-                idx = perm[i * EFFECTIVE_BATCH + micro * MICRO_BATCH : i * EFFECTIVE_BATCH + (micro + 1) * MICRO_BATCH]
-                batch = train_blocks[idx].to(DEVICE)
-                logits = model(batch).logits
-                loss = torch.nn.functional.cross_entropy(
-                    logits[:, :-1, :].reshape(-1, logits.shape[-1]),
-                    batch[:, 1:].reshape(-1),
-                ) / ACCUM_STEPS
-                loss.backward()
-                batch_loss += loss.item()
-                tokens_seen += batch.numel()
-                _heartbeat(start, step, total_steps, epoch, batch_loss, mem)
+            progress.step, progress.epoch = step, epoch
+            batch_loss, tokens_in_step = _accumulate_step(model, train_blocks, perm, i, progress)
+            progress.last_step_loss = batch_loss
+            tokens_seen += tokens_in_step
             torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad], CLIP)
             opt.step()
             step += 1
